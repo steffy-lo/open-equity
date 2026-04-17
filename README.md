@@ -62,6 +62,13 @@ curl -X POST http://localhost:5000/screen \
   -d '{"tickers":["NVDA","AAPL","MSFT","GOOGL","META"]}'
 ```
 
+### Trigger a watchlist screen explicitly
+```bash
+curl -X POST http://localhost:5000/screen \
+  -H "Content-Type: application/json" \
+  -d '{"use_watchlist":true,"screen_scope":"watchlist"}'
+```
+
 ### Push signals from ClaWHub skills
 ```bash
 curl -X POST http://localhost:5000/screen \
@@ -80,6 +87,32 @@ curl -X POST http://localhost:5000/screen \
   }'
 ```
 
+### Push TradingView Screener results from a custom universe outside the watchlist
+```bash
+curl -X POST http://localhost:5000/screen \
+  -H "Content-Type: application/json" \
+  -d '{
+    "screen_scope": "custom_universe",
+    "screen_label": "AI infra mega-cap scan",
+    "universe": "US large-cap AI and semiconductor names outside the watchlist",
+    "signals": [
+      {
+        "ticker": "NVDA",
+        "signal": "buy",
+        "confidence": 0.87,
+        "reason": "Breakout + volume 2.3x + RSI 63 + above SMA200",
+        "skill_used": "tradingview-screener",
+        "price_at_signal": 875.20
+      }
+    ]
+  }'
+```
+
+Those signals are stored with screen metadata so OpenClaw can later filter for:
+- watchlist runs
+- custom universe scans
+- named scan themes via `screen_label`
+
 ### Add tickers to watchlist
 ```bash
 curl -X PUT http://localhost:5000/watchlist \
@@ -90,6 +123,8 @@ curl -X PUT http://localhost:5000/watchlist \
 ### View latest signals
 ```bash
 curl "http://localhost:5000/signals?signal_type=buy"
+curl "http://localhost:5000/signals?screen_scope=custom_universe"
+curl "http://localhost:5000/signals?screen_label=AI%20infra%20mega-cap%20scan"
 ```
 
 ### View trade history (OpenClaw's memory)
@@ -150,7 +185,9 @@ Confidence ≥ 0.70 → BUY signal surfaced to OpenClaw.
    - `https://clawhub.ai/nickfiorani/fundamental-stock-analysis`
    - `https://clawhub.ai/paulshe/china-stock-analysis`
 3. Ensure OpenClaw's tool execution environment can reach `http://localhost:5000`
-4. Test with: "Screen my watchlist and tell me top buy candidates"
+4. Test with:
+   - "Screen my watchlist and tell me top buy candidates"
+   - "Use TradingView Screener to find AI infra breakouts outside my watchlist"
 
 ---
 

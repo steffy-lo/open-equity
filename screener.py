@@ -32,6 +32,43 @@ SignalType = Literal["buy", "flag", "neutral"]
 _SIGNAL_ORDER = {"buy": 0, "flag": 1, "neutral": 2, "error": 3}
 
 
+def _normalize_tickers(tickers: list | None) -> list:
+    if not tickers:
+        return []
+
+    seen = set()
+    normalized = []
+    for ticker in tickers:
+        t = ticker.upper().strip()
+        if t and t not in seen:
+            seen.add(t)
+            normalized.append(t)
+    return normalized
+
+
+def _resolve_watchlist_membership(tickers: list) -> dict[str, bool]:
+    watchlist = set(load_watchlist())
+    return {ticker: ticker in watchlist for ticker in tickers}
+
+
+def _resolve_screen_scope(
+    tickers: list,
+    screen_scope: str | None = None,
+    use_watchlist: bool = False,
+) -> str:
+    if screen_scope:
+        return screen_scope
+    if use_watchlist:
+        return "watchlist"
+
+    watchlist = load_watchlist()
+    if tickers and tickers == watchlist:
+        return "watchlist"
+    if tickers:
+        return "custom_universe"
+    return "watchlist"
+
+
 # ─────────────────────────────────────────────────────────────
 # Watchlist helpers
 # ─────────────────────────────────────────────────────────────
@@ -207,21 +244,36 @@ def _score(price_data: dict, tech: dict) -> tuple:
 # Local screener run
 # ─────────────────────────────────────────────────────────────
 
-def run_screen(tickers: list = None, session: Session = None) -> list:
+def run_screen(
+    tickers: list = None,
+    session: Session = None,
+    screen_scope: str | None = None,
+    screen_label: str | None = None,
+    universe: str | None = None,
+    use_watchlist: bool = False,
+) -> list:
     """
     Score every ticker in `tickers` (or full watchlist if None).
     Persists signals to DB if session is provided.
     Returns list sorted: buys first → flags → neutral, highest confidence first.
     """
-    if not tickers:
-        tickers = load_watchlist()
+    normalized_tickers = _normalize_tickers(tickers)
+    if not normalized_tickers:
+        normalized_tickers = load_watchlist()
+        use_watchlist = True
 
-    if not tickers:
+    if not normalized_tickers:
         return []
 
+    resolved_scope = _resolve_screen_scope(
+        tickers=normalized_tickers,
+        screen_scope=screen_scope,
+        use_watchlist=use_watchlist,
+    )
+    watchlist_membership = _resolve_watchlist_membership(normalized_tickers)
+
     results = []
-    for ticker in tickers:
-        t = ticker.upper()
+    for t in normalized_tickers:
         try:
             price_data = get_price_data(t)
             tech       = get_technicals(t)
@@ -243,6 +295,10 @@ def run_screen(tickers: list = None, session: Session = None) -> list:
                 "div_yield":         price_data.get("div_yield"),
                 "sector":            price_data.get("sector"),
                 "skill_used":        "local_screener",
+                "screen_scope":      resolved_scope,
+                "screen_label":      screen_label,
+                "universe":          universe,
+                "watchlist_member":  watchlist_membership.get(t, False),
                 "timestamp":         datetime.utcnow().isoformat() + "Z",
             }
             results.append(result)
@@ -255,6 +311,10 @@ def run_screen(tickers: list = None, session: Session = None) -> list:
                     reason          = reason,
                     skill_used      = "local_screener",
                     price_at_signal = price_data.get("price"),
+                    screen_scope    = resolved_scope,
+                    screen_label    = screen_label,
+                    universe        = universe,
+                    watchlist_member= watchlist_membership.get(t, False),
                 ))
 
         except Exception as exc:
@@ -290,18 +350,26 @@ def ingest_signals(signals: list, session: Session) -> dict:
     Each signal dict must have: ticker, signal, confidence, reason, skill_used.
     Optional: price_at_signal.
     """
+    normalized_tickers = _normalize_tickers([signal.get("ticker", "") for signal in signals])
+    watchlist_membership = _resolve_watchlist_membership(normalized_tickers)
+
     stored = 0
     errors = []
 
     for s in signals:
         try:
+            ticker = s["ticker"].upper()
             sig = Signal(
-                ticker          = s["ticker"].upper(),
+                ticker          = ticker,
                 signal          = s["signal"],
                 confidence      = float(s["confidence"]),
                 reason          = s.get("reason", ""),
                 skill_used      = s.get("skill_used", "openclaw"),
                 price_at_signal = s.get("price_at_signal"),
+                screen_scope    = s.get("screen_scope") or "watchlist",
+                screen_label    = s.get("screen_label"),
+                universe        = s.get("universe"),
+                watchlist_member= s.get("watchlist_member", watchlist_membership.get(ticker, False)),
             )
             session.add(sig)
             stored += 1
@@ -321,13 +389,23 @@ def ingest_signals(signals: list, session: Session) -> dict:
 # Signal retrieval helpers
 # ─────────────────────────────────────────────────────────────
 
-def get_latest_signals(session: Session, signal_type: str = None, limit: int = 50) -> list:
+def get_latest_signals(
+    session: Session,
+    signal_type: str = None,
+    limit: int = 50,
+    screen_scope: str = None,
+    screen_label: str = None,
+) -> list:
     """
     Return the most recent signal per ticker (deduped), optionally filtered by type.
     """
     query = select(Signal).order_by(col(Signal.timestamp).desc())
     if signal_type:
         query = query.where(Signal.signal == signal_type)
+    if screen_scope:
+        query = query.where(Signal.screen_scope == screen_scope)
+    if screen_label:
+        query = query.where(Signal.screen_label == screen_label)
 
     all_signals = session.exec(query).all()
 
@@ -345,6 +423,10 @@ def get_latest_signals(session: Session, signal_type: str = None, limit: int = 5
                 "reason":           sig.reason,
                 "skill_used":       sig.skill_used,
                 "price_at_signal":  sig.price_at_signal,
+                "screen_scope":     sig.screen_scope,
+                "screen_label":     sig.screen_label,
+                "universe":         sig.universe,
+                "watchlist_member": sig.watchlist_member,
                 "acted_on":         sig.acted_on,
                 "timestamp":        sig.timestamp.isoformat() + "Z",
             })

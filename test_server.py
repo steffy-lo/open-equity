@@ -132,6 +132,9 @@ def run():
          check=lambda b: b.get("screen", {}).get("scanned") == 2)
 
     s, b = POST("/screen", {
+        "screen_scope": "custom_universe",
+        "screen_label": "AI mega-cap momentum scan",
+        "universe": "US large-cap AI names outside watchlist",
         "signals": [
             {
                 "ticker":          "NVDA",
@@ -154,6 +157,10 @@ def run():
     test("POST /screen (ingest 2 skill signals)  →  2 ingested", s, b,
          check=lambda b: b.get("ingested", {}).get("ingested") == 2)
 
+    s, b = GET("/signals?screen_scope=custom_universe")
+    test("GET /signals?screen_scope=custom_universe  →  metadata filter works", s, b,
+         check=lambda b: all(sig.get("screen_scope") == "custom_universe" for sig in b.get("signals", [])))
+
     s, b = GET("/signals")
     test("GET /signals  →  signals present", s, b,
          check=lambda b: isinstance(b.get("signals"), list))
@@ -164,7 +171,7 @@ def run():
 
     s, b = GET("/signals/NVDA")
     test("GET /signals/NVDA  →  history returned", s, b,
-         check=lambda b: b.get("ticker") == "NVDA" and b.get("count", 0) > 0)
+         check=lambda b: b.get("ticker") == "NVDA" and b.get("count", 0) > 0 and any(sig.get("screen_label") == "AI mega-cap momentum scan" for sig in b.get("signals", [])))
 
     # ── Orders ────────────────────────────────────────────────
     section("Orders & Portfolio")
