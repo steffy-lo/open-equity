@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator, Optional
 
+from sqlalchemy import inspect, text
 from sqlmodel import Field, Session, SQLModel, create_engine
 
 from config import DB_PATH
@@ -42,6 +43,10 @@ class Signal(SQLModel, table=True):
     reason: str
     skill_used: str = "openclaw"
     price_at_signal: Optional[float] = None
+    screen_scope: Optional[str] = None
+    screen_label: Optional[str] = None
+    universe: Optional[str] = None
+    watchlist_member: bool = False
     acted_on: bool = False
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
 
@@ -62,8 +67,29 @@ engine = create_engine(
 )
 
 
+def _ensure_signal_columns() -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "signal" not in tables:
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("signal")}
+    migrations = {
+        "screen_scope": "ALTER TABLE signal ADD COLUMN screen_scope VARCHAR",
+        "screen_label": "ALTER TABLE signal ADD COLUMN screen_label VARCHAR",
+        "universe": "ALTER TABLE signal ADD COLUMN universe VARCHAR",
+        "watchlist_member": "ALTER TABLE signal ADD COLUMN watchlist_member BOOLEAN DEFAULT 0",
+    }
+
+    with engine.begin() as conn:
+        for column, ddl in migrations.items():
+            if column not in existing:
+                conn.execute(text(ddl))
+
+
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
+    _ensure_signal_columns()
 
 
 def get_session() -> Generator[Session, None, None]:

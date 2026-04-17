@@ -48,6 +48,22 @@ _Triggered by: "Screen my watchlist", "Find me buy candidates", or the nightly s
 4. For top buy candidates: call fundamental-stock-analysis skill
 5. Report to Telegram: buys, flags, and the reasoning chain
 
+### Workflow A2 — Off-Watchlist TradingView Universe Scan
+_Triggered by: "Find me breakouts outside my watchlist", "Screen semis/AI/cloud names", or any custom-universe request_
+
+1. Build the custom universe from the user's instruction or the TradingView Screener skill's filters, without mutating the watchlist unless the user explicitly asks
+2. Call TradingView Screener skill on that custom universe
+3. For each promising ticker:
+   a. Call `GET /price/{ticker}` to enrich with fundamentals
+   b. Call equity-valuation-framework skill to validate valuation
+   c. If CN/HK ticker → also call china-stock-analysis skill
+4. Push the scored signals to `POST /screen` with:
+   - `screen_scope: "custom_universe"`
+   - `screen_label`: a short label such as "AI infra momentum scan"
+   - `universe`: the universe description or filter summary
+5. Only add those tickers to `/watchlist` if the user explicitly asks to save them
+6. Report the best candidates and clearly note they came from an off-watchlist screen
+
 ### Workflow B — Single Ticker Deep Dive
 _Triggered by: "Analyse NVDA", "Should I buy AAPL?"_
 
@@ -88,6 +104,7 @@ _Triggered by: "Buy 10 AAPL", "Sell my TSLA position"_
 - **Always read `/signals/{ticker}`** before acting — was this ticker recently flagged?
 - **Always store reasoning in the `note` field** — future-you will read this
 - **After every screen run, push signals to `POST /screen`** — this keeps the server's DB current
+- **For off-watchlist TradingView scans, store `screen_scope`, `screen_label`, and `universe` in `POST /screen`** — this preserves provenance without polluting the watchlist
 - **After every portfolio review, check `/benchmark`** — report alpha to the user
 
 ---
