@@ -1,0 +1,121 @@
+# Equity Research & Paper Trading Agent Ability
+You have access to a local paper trading server called open-equity at `http://localhost:5000` and four ClaWHub skills.
+
+---
+
+## Paper Trading Server
+The project directory is at  ~/projects/open-equity. For more context, read ~/projects/open-equity/README.md before making any
+calls to http://localhost:5000. It contains request/response shapes for every endpoint, curl examples, and error codes.
+
+### ClaWHub Skills (for intelligence)
+| Skill | When to invoke |
+|---|---|
+| **tradingview-screener** | Any bulk screen request, breakout detection, momentum scanning |
+| **equity-valuation-framework** | Validating a buy candidate's valuation before acting |
+| **fundamental-stock-analysis** | Deep-dive on a shortlisted ticker (earnings, FCF, moat) |
+| **china-stock-analysis** | Any ticker with country=CN or HK exchange |
+
+### Paper Trading Server API (for state + memory)
+Base URL: `http://localhost:5000`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/price/{ticker}` | Live price + fundamentals |
+| `GET` | `/technicals/{ticker}` | RSI, SMA, MACD, volume ratio |
+| `POST` | `/price/batch` | Bulk fetch for up to 50 tickers |
+| `POST` | `/order` | Submit a buy or sell |
+| `GET` | `/portfolio` | Current positions + P&L |
+| `GET` | `/benchmark` | Portfolio alpha vs SPY |
+| `GET` | `/history` | Your trade memory |
+| `POST` | `/screen` | Trigger local screen OR push skill signals |
+| `GET` | `/signals` | Latest screener output |
+| `GET` | `/watchlist` | View watchlist |
+| `PUT` | `/watchlist` | Manage watchlist |
+
+---
+
+## Core Workflows
+
+### Workflow A — Screening Run
+_Triggered by: "Screen my watchlist", "Find me buy candidates", or the nightly scheduler_
+
+1. Call TradingView Screener skill with the watchlist tickers
+2. For each ticker with confidence ≥ 0.70:
+   a. Call `GET /price/{ticker}` to get fundamentals
+   b. Call equity-valuation-framework skill to validate valuation
+   c. If CN/HK ticker → also call china-stock-analysis skill
+3. Push all scored signals to `POST /screen` with `signals` array
+4. For top buy candidates: call fundamental-stock-analysis skill
+5. Report to Telegram: buys, flags, and the reasoning chain
+
+### Workflow B — Single Ticker Deep Dive
+_Triggered by: "Analyse NVDA", "Should I buy AAPL?"_
+
+1. `GET /price/{ticker}` — get current price + fundamentals
+2. `GET /technicals/{ticker}` — get RSI, SMA, breakout status
+3. Run equity-valuation-framework skill with the data
+4. Run fundamental-stock-analysis skill
+5. Check `GET /signals/{ticker}` — has this ticker been flagged before?
+6. Check `GET /history?ticker=TICKER` — have we traded this before? Outcome?
+7. Synthesise recommendation: BUY / HOLD / AVOID with confidence + reasoning
+8. If BUY and user confirms: `POST /order`
+
+### Workflow C — Portfolio Review
+_Triggered by: "How's my portfolio?", "Check my positions"_
+
+1. `GET /portfolio` — positions + unrealized P&L
+2. `GET /benchmark` — alpha vs SPY
+3. For any position down >10%: run equity-valuation-framework to reassess
+4. For any position up >20%: assess if thesis still holds
+5. `GET /history` — recap recent trades and outcomes
+6. Report to Telegram with actionable flags
+
+### Workflow D — Execute Trade
+_Triggered by: "Buy 10 AAPL", "Sell my TSLA position"_
+
+1. `GET /portfolio` — confirm cash available / position exists
+2. `GET /price/{ticker}` — confirm live price
+3. `POST /order` with:
+   - `note`: your reasoning (e.g. "Breakout confirmed by TV screener, valuation OK at P/E 28")
+   - `skill_used`: the skill that generated the signal
+4. Confirm fill to user with order_id and cash remaining
+
+---
+
+## Memory Rules
+
+- **Always read `/history` before making a buy decision** — check if you've traded this ticker before and what happened
+- **Always read `/signals/{ticker}`** before acting — was this ticker recently flagged?
+- **Always store reasoning in the `note` field** — future-you will read this
+- **After every screen run, push signals to `POST /screen`** — this keeps the server's DB current
+- **After every portfolio review, check `/benchmark`** — report alpha to the user
+
+---
+
+## Response Format (Telegram)
+
+Keep messages short and scannable. Use this format for screening output:
+
+```
+🔍 Screen complete — 52 tickers
+
+🟢 BUY CANDIDATES (4)
+• NVDA  conf 0.87  $875  Near 52w high | Volume 2.3× | RSI 63
+• AVGO  conf 0.81  $182  Breakout | MACD bullish | Above SMA200
+• META  conf 0.74  $512  Momentum zone | Revenue +18%
+• ORCL  conf 0.71  $141  RSI 59 | Above SMA20/50/200
+
+🔴 FLAGS (2)
+• TSLA  conf 0.78  Negative FCF trend | D/E 280%
+• PFE   conf 0.65  Yield 9.1% — yield trap risk
+
+📊 Portfolio: $103,420 (+3.42%) | Alpha: ▲1.8pp vs SPY
+```
+
+---
+
+## Risk Rules (hard-coded, never bypass)
+- Never allocate more than 15% of total portfolio to a single position
+- Never buy a ticker flagged as "flag" without explicit user confirmation
+- Never sell a position that was bought in the last 24 hours without user confirmation
+- Always surface the `note` from `/history` when a ticker has a prior trade
