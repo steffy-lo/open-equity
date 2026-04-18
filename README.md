@@ -69,29 +69,6 @@ curl -X POST http://localhost:5000/screen \
   -d '{"use_watchlist":true,"screen_scope":"watchlist"}'
 ```
 
-### Trigger an off-watchlist preset scan
-```bash
-curl -X POST http://localhost:5000/screen \
-  -H "Content-Type: application/json" \
-  -d '{"preset":"quality_broad"}'
-```
-
-### List available screen presets
-```bash
-curl http://localhost:5000/screen/presets
-```
-
-### List available scan modes
-```bash
-curl http://localhost:5000/screen/modes
-```
-
-### Run a preset with a mode
-```bash
-curl -X POST http://localhost:5000/screen \
-  -H "Content-Type: application/json" \
-  -d '{"preset":"quality_broad","scan_mode":"pullback"}'
-```
 
 ### Push signals from ClaWHub skills
 ```bash
@@ -149,7 +126,6 @@ curl -X PUT http://localhost:5000/watchlist \
 curl "http://localhost:5000/signals?signal_type=buy"
 curl "http://localhost:5000/signals?screen_scope=custom_universe"
 curl "http://localhost:5000/signals?screen_label=AI%20infra%20mega-cap%20scan"
-curl "http://localhost:5000/signals?screen_label=quality%20broad%20market%20scan"
 ```
 
 ### View trade history (OpenClaw's memory)
@@ -230,8 +206,6 @@ Confidence ≥ 0.70 → BUY signal surfaced to OpenClaw.
 4. Test with:
    - "Screen my watchlist and tell me top buy candidates"
    - "Use TradingView Screener to find AI infra breakouts outside my watchlist"
-   - "Run the quality_broad off-watchlist preset and show me top candidates"
-   - "Run the quality_broad preset in pullback mode"
 
 ---
 
@@ -250,11 +224,10 @@ open-equity/
 │   ├── portfolio.py             # GET /portfolio, GET /benchmark
 │   ├── prices.py                # GET /price/:ticker, GET /technicals/:ticker
 │   ├── history.py               # GET /history
-│   └── screener.py              # POST /screen, presets, GET /signals, watchlist
+│   └── screener.py              # POST /screen, GET /signals, watchlist
 └── services/
     ├── market_data.py           # yfinance wrapper + TTL cache
     ├── portfolio_engine.py      # Order execution + P&L engine
-    ├── scan_presets.py          # Reusable off-watchlist custom-universe presets
     ├── screener.py              # Signal scoring + watchlist + ingestion
     └── scheduler.py             # APScheduler background jobs
 ```

@@ -31,9 +31,10 @@ AUTONOMY_COOLDOWN_MINUTES = int(os.getenv("AUTONOMY_COOLDOWN_MINUTES", "180"))
 AUTONOMY_MAX_DAILY_NEW_BUYS = int(os.getenv("AUTONOMY_MAX_DAILY_NEW_BUYS", "4"))
 AUTONOMY_MAX_DAILY_NOTIONAL_PCT = float(os.getenv("AUTONOMY_MAX_DAILY_NOTIONAL_PCT", "0.20"))
 AUTONOMY_ACCOUNT_NAME = os.getenv("AUTONOMY_ACCOUNT_NAME", "siriv5")
-AUTONOMY_SOURCE_PRESET = os.getenv("AUTONOMY_SOURCE_PRESET", "quality_broad")
-AUTONOMY_SOURCE_MODE = os.getenv("AUTONOMY_SOURCE_MODE", "pullback")
-AUTONOMY_SOURCE_PLAN = os.getenv(
-    "AUTONOMY_SOURCE_PLAN",
-    "quality_broad:pullback,quality_broad:breakout,ai_infra:breakout,fintech_growth:quality_value_momentum",
-)
+AUTONOMY_SOURCE_TICKERS = [
+    "UBER", "BKNG", "SHOP", "MELI", "ADBE", "PANW", "CRWD", "SNOW", "TTD", "INTU",
+    "V", "MA", "JPM", "GS", "LLY", "NVO", "COST", "WMT", "GE", "CAT",
+    "ETN", "TT", "DE", "URI", "LIN", "NVDA", "MSFT", "GOOGL", "AMZN", "META",
+    "AVGO", "TSM", "ASML", "AMD", "AAPL", "ORCL", "CRM", "NOW", "MU", "ANET",
+    "PYPL", "COIN", "HOOD", "DASH", "SPOT", "NFLX", "ADYEN.AS", "NU", "SOFI", "SE",
+]

@@ -16,14 +16,11 @@ from config import (
     AUTONOMY_MIN_CONFIDENCE,
     AUTONOMY_MODE,
     AUTONOMY_POSITION_SIZE_PCT,
-    AUTONOMY_SOURCE_MODE,
-    AUTONOMY_SOURCE_PLAN,
-    AUTONOMY_SOURCE_PRESET,
+    AUTONOMY_SOURCE_TICKERS,
     STARTING_CASH,
 )
 from database import DerivativeIdea, PipelineRun, Signal, Trade, TradePlan, TradeProposal
 from services.portfolio_engine import execute_order, get_portfolio_state
-from services.scan_presets import get_scan_mode, get_scan_preset
 from services.screener import load_watchlist, run_screen
 
 VALID_MODES = {"manual", "propose_only", "auto_paper"}
@@ -38,17 +35,24 @@ class RiskCheck:
     proposed_qty: float
 
 
+@dataclass
+class DailyBudgetState:
+    buy_count: int
+    notional: float
+
+
 def get_autonomy_config() -> dict[str, Any]:
     return {
         "account_name": AUTONOMY_ACCOUNT_NAME,
         "mode": AUTONOMY_MODE,
-        "source_preset": AUTONOMY_SOURCE_PRESET,
-        "source_mode": AUTONOMY_SOURCE_MODE,
-        "source_plan": AUTONOMY_SOURCE_PLAN,
+        "source_ticker_count": len(AUTONOMY_SOURCE_TICKERS),
         "max_position_pct": AUTONOMY_MAX_POSITION_PCT,
         "position_size_pct": AUTONOMY_POSITION_SIZE_PCT,
         "min_confidence": AUTONOMY_MIN_CONFIDENCE,
         "max_new_buys_per_run": AUTONOMY_MAX_NEW_BUYS_PER_RUN,
+        "cooldown_minutes": AUTONOMY_COOLDOWN_MINUTES,
+        "max_daily_new_buys": AUTONOMY_MAX_DAILY_NEW_BUYS,
+        "max_daily_notional_pct": AUTONOMY_MAX_DAILY_NOTIONAL_PCT,
     }
 
 
@@ -206,6 +210,47 @@ def _build_exit_plan(position: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _build_management_update(active_plan: TradePlan, qty: float, rationale: str, source_context: str) -> dict[str, Any]:
+    return {
+        "ticker": active_plan.ticker,
+        "thesis_type": active_plan.thesis_type,
+        "timeframe": active_plan.timeframe,
+        "direction": active_plan.direction,
+        "entry_price": active_plan.entry_price,
+        "stop_price": active_plan.stop_price,
+        "target_price": active_plan.target_price,
+        "conviction": active_plan.conviction,
+        "status": active_plan.status,
+        "lifecycle_stage": active_plan.lifecycle_stage,
+        "rationale": rationale,
+        "source_context": source_context,
+        "linked_position_qty": qty,
+        "parent_trade_plan_id": active_plan.id,
+        "management_only": True,
+    }
+
+
+def _build_time_stop_exit(active_plan: TradePlan, current_price: float, qty: float, unrealized_pct: float, age_hours: float) -> dict[str, Any]:
+    return {
+        "ticker": active_plan.ticker,
+        "thesis_type": "time_stop_exit",
+        "timeframe": "active",
+        "direction": "exit",
+        "entry_price": current_price,
+        "stop_price": current_price,
+        "target_price": current_price,
+        "conviction": 0.6,
+        "status": "planned",
+        "lifecycle_stage": "exit_candidate",
+        "rationale": f"Trade has been open for {age_hours:.1f}h with limited progress ({unrealized_pct:.2f}%), triggering time-stop review.",
+        "source_context": "position_management.time_stop",
+        "linked_position_qty": qty,
+        "proposal_side": "sell",
+        "proposal_qty": qty,
+        "parent_trade_plan_id": active_plan.id,
+    }
+
+
 def _manage_active_trade_plan(session: Session, account_name: str, position: dict[str, Any]) -> dict[str, Any] | None:
     active_plan = _find_active_trade_plan(session, account_name, position.get("ticker"))
     if not active_plan or active_plan.lifecycle_stage not in {"active", "entry_candidate"}:
@@ -214,64 +259,26 @@ def _manage_active_trade_plan(session: Session, account_name: str, position: dic
     current_price = float(position.get("current_price") or 0.0)
     unrealized_pct = float(position.get("unrealized_pct") or 0.0)
     qty = float(position.get("qty") or 0.0)
-
     if qty <= 0 or current_price <= 0:
         return None
 
-    updated = False
-    notes: list[str] = []
+    if active_plan.created_at:
+        age_hours = (datetime.utcnow() - active_plan.created_at).total_seconds() / 3600
+        if age_hours >= 72 and abs(unrealized_pct) < 2:
+            return _build_time_stop_exit(active_plan, current_price, qty, unrealized_pct, age_hours)
 
     if unrealized_pct >= 4 and active_plan.stop_price < active_plan.entry_price:
         active_plan.stop_price = active_plan.entry_price
-        notes.append("Moved stop to breakeven after trade reached initial profit threshold")
-        updated = True
-
-    age_hours = None
-    if active_plan.created_at:
-        age_hours = (datetime.utcnow() - active_plan.created_at).total_seconds() / 3600
-
-    if age_hours is not None and age_hours >= 72 and abs(unrealized_pct) < 2:
-        return {
-            "ticker": position.get("ticker"),
-            "thesis_type": "time_stop_exit",
-            "timeframe": "active",
-            "direction": "exit",
-            "entry_price": current_price,
-            "stop_price": current_price,
-            "target_price": current_price,
-            "conviction": 0.6,
-            "status": "planned",
-            "lifecycle_stage": "exit_candidate",
-            "rationale": f"Trade has been open for {age_hours:.1f}h with limited progress ({unrealized_pct:.2f}%), triggering time-stop review.",
-            "source_context": "position_management.time_stop",
-            "linked_position_qty": qty,
-            "proposal_side": "sell",
-            "proposal_qty": qty,
-            "parent_trade_plan_id": active_plan.id,
-        }
-
-    if updated:
         active_plan.last_reviewed_at = datetime.utcnow()
         session.add(active_plan)
         session.commit()
         session.refresh(active_plan)
-        return {
-            "ticker": position.get("ticker"),
-            "thesis_type": active_plan.thesis_type,
-            "timeframe": active_plan.timeframe,
-            "direction": active_plan.direction,
-            "entry_price": active_plan.entry_price,
-            "stop_price": active_plan.stop_price,
-            "target_price": active_plan.target_price,
-            "conviction": active_plan.conviction,
-            "status": active_plan.status,
-            "lifecycle_stage": active_plan.lifecycle_stage,
-            "rationale": " | ".join(notes),
-            "source_context": "position_management.breakeven",
-            "linked_position_qty": qty,
-            "parent_trade_plan_id": active_plan.id,
-            "management_only": True,
-        }
+        return _build_management_update(
+            active_plan,
+            qty,
+            "Moved stop to breakeven after trade reached initial profit threshold",
+            "position_management.breakeven",
+        )
 
     return None
 
@@ -345,6 +352,89 @@ def _daily_buy_budget_state(session: Session, account_name: str) -> dict[str, fl
     }
 
 
+def _load_daily_budget_state(session: Session, account_name: str) -> DailyBudgetState:
+    raw = _daily_buy_budget_state(session, account_name)
+    return DailyBudgetState(
+        buy_count=int(raw["buy_count"]),
+        notional=float(raw["notional"]),
+    )
+
+
+def _append_risk_rejection(risk: RiskCheck, note: str) -> None:
+    risk.notes.append(note)
+    risk.approved = False
+
+
+def _build_trade_plan_model(
+    *,
+    run_id: int,
+    account_name: str,
+    payload: dict[str, Any],
+    parent_trade_plan_id: int | None = None,
+) -> TradePlan:
+    return TradePlan(
+        run_id=run_id,
+        account_name=account_name,
+        ticker=payload["ticker"],
+        thesis_type=payload["thesis_type"],
+        timeframe=payload["timeframe"],
+        direction=payload["direction"],
+        entry_price=payload["entry_price"],
+        stop_price=payload["stop_price"],
+        target_price=payload["target_price"],
+        conviction=payload["conviction"],
+        status=payload.get("status", "planned"),
+        lifecycle_stage=payload.get("lifecycle_stage", "new"),
+        parent_trade_plan_id=parent_trade_plan_id,
+        rationale=payload["rationale"],
+        source_context=payload.get("source_context"),
+        linked_position_qty=payload.get("linked_position_qty"),
+    )
+
+
+def _serialize_trade_plan(trade_plan: TradePlan) -> dict[str, Any]:
+    return {
+        "trade_plan_id": trade_plan.id,
+        "ticker": trade_plan.ticker,
+        "thesis_type": trade_plan.thesis_type,
+        "timeframe": trade_plan.timeframe,
+        "direction": trade_plan.direction,
+        "entry_price": trade_plan.entry_price,
+        "stop_price": trade_plan.stop_price,
+        "target_price": trade_plan.target_price,
+        "conviction": trade_plan.conviction,
+        "status": trade_plan.status,
+        "lifecycle_stage": trade_plan.lifecycle_stage,
+        "rationale": trade_plan.rationale,
+        "source_context": trade_plan.source_context,
+        "linked_position_qty": trade_plan.linked_position_qty,
+        "parent_trade_plan_id": trade_plan.parent_trade_plan_id,
+    }
+
+
+def _serialize_proposal(
+    proposal: TradeProposal,
+    *,
+    source_hits: int | None,
+    source_combos: list[str] | None,
+    execution: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "proposal_id": proposal.id,
+        "ticker": proposal.ticker,
+        "status": proposal.status,
+        "confidence": proposal.confidence,
+        "source_hits": source_hits,
+        "source_combos": source_combos,
+        "proposed_qty": proposal.proposed_qty,
+        "reference_price": proposal.reference_price,
+        "target_position_pct": proposal.target_position_pct,
+        "rationale": proposal.rationale,
+        "risk_notes": proposal.risk_notes,
+        "execution": execution,
+    }
+
+
 def _latest_signal_for_ticker(session: Session, ticker: str) -> Signal | None:
     return session.exec(
         select(Signal)
@@ -353,71 +443,8 @@ def _latest_signal_for_ticker(session: Session, ticker: str) -> Signal | None:
     ).first()
 
 
-def _parse_source_plan() -> list[tuple[str, str]]:
-    entries = []
-    for raw in AUTONOMY_SOURCE_PLAN.split(","):
-        item = raw.strip()
-        if not item:
-            continue
-        if ":" not in item:
-            raise ValueError(f"Invalid AUTONOMY_SOURCE_PLAN entry: {item}")
-        preset, mode = item.split(":", 1)
-        preset = preset.strip()
-        mode = mode.strip()
-        get_scan_preset(preset)
-        get_scan_mode(mode)
-        entries.append((preset, mode))
-    return entries
-
-
 def _signal_rank(signal: str | None) -> int:
     return _SIGNAL_ORDER.get(signal or "neutral", 3)
-
-
-def _merge_candidates(screen_sets: list[tuple[str, str, list[dict[str, Any]]]]) -> tuple[list[dict[str, Any]], str, int]:
-    merged: dict[str, dict[str, Any]] = {}
-    total_universe = 0
-    source_labels: list[str] = []
-
-    for preset_name, mode_name, rows in screen_sets:
-        total_universe += len(rows)
-        source_labels.append(f"{preset_name}:{mode_name}")
-        for row in rows:
-            ticker = row["ticker"]
-            item = merged.get(ticker)
-            if not item:
-                item = dict(row)
-                item["source_hits"] = 0
-                item["source_combos"] = []
-                item["max_confidence_seen"] = float(row.get("confidence") or 0.0)
-                merged[ticker] = item
-
-            item["source_hits"] += 1
-            item["source_combos"].append(f"{preset_name}:{mode_name}")
-            item["max_confidence_seen"] = max(item["max_confidence_seen"], float(row.get("confidence") or 0.0))
-
-            if float(row.get("confidence") or 0.0) > float(item.get("confidence") or 0.0):
-                keep_hits = item["source_hits"]
-                keep_combos = item["source_combos"]
-                keep_max = item["max_confidence_seen"]
-                item.update(row)
-                item["source_hits"] = keep_hits
-                item["source_combos"] = keep_combos
-                item["max_confidence_seen"] = keep_max
-
-    merged_list = []
-    for item in merged.values():
-        boosted_conf = min(float(item.get("max_confidence_seen") or 0.0) + 0.05 * max(item["source_hits"] - 1, 0), 0.99)
-        item["confidence"] = round(boosted_conf, 2)
-        item["source_hits"] = int(item["source_hits"])
-        item["source_combos"] = sorted(set(item["source_combos"]))
-        item["reason"] = (item.get("reason") or "") + f" | Source agreement {item['source_hits']}"
-        if item.get("signal") != "flag":
-            item["signal"] = "buy" if item["confidence"] >= AUTONOMY_MIN_CONFIDENCE else item.get("signal", "neutral")
-        merged_list.append(item)
-
-    merged_list.sort(key=lambda x: (_signal_rank(x.get("signal")), -(x.get("confidence") or 0.0), -x.get("source_hits", 0)))
-    return merged_list, ", ".join(source_labels), total_universe
 
 
 def _risk_check(candidate: dict[str, Any], portfolio: dict[str, Any], existing_position: dict[str, Any] | None) -> RiskCheck:
@@ -483,21 +510,17 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
             screen_scope="watchlist",
         )
     else:
-        screen_sets = []
-        for preset_name, mode_name in _parse_source_plan():
-            preset = get_scan_preset(preset_name)
-            rows = run_screen(
-                tickers=preset["tickers"],
-                session=session,
-                use_watchlist=False,
-                screen_scope="custom_universe",
-                screen_label=preset["label"],
-                universe=preset["universe"],
-                scan_mode=mode_name,
-            )
-            screen_sets.append((preset_name, mode_name, rows))
-
-        screened, source_summary, total_universe = _merge_candidates(screen_sets)
+        source_summary = "Autonomy source universe"
+        screened = run_screen(
+            tickers=AUTONOMY_SOURCE_TICKERS,
+            session=session,
+            use_watchlist=False,
+            screen_scope="custom_universe",
+            screen_label="autonomy source universe",
+            universe="Hardcoded autonomy source universe",
+            scan_mode=None,
+        )
+        total_universe = len(AUTONOMY_SOURCE_TICKERS)
 
     run = PipelineRun(account_name=selected_account, mode=selected_mode, status="running", universe_size=total_universe)
     session.add(run)
@@ -519,7 +542,7 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
         }
 
     portfolio = get_portfolio_state(session, account_name=selected_account)
-    daily_budget = _daily_buy_budget_state(session, selected_account)
+    daily_budget = _load_daily_budget_state(session, selected_account)
     positions_by_ticker = {p["ticker"]: p for p in portfolio.get("positions", [])}
     candidates = [item for item in screened if item.get("signal") == "buy"]
     run.candidates_considered = len(candidates)
@@ -582,23 +605,12 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
         session.commit()
         session.refresh(proposal)
 
-        trade_plan = TradePlan(
+        parent_trade_plan = _find_active_trade_plan(session, selected_account, ticker)
+        trade_plan = _build_trade_plan_model(
             run_id=run.id,
             account_name=selected_account,
-            ticker=exit_plan["ticker"],
-            thesis_type=exit_plan["thesis_type"],
-            timeframe=exit_plan["timeframe"],
-            direction=exit_plan["direction"],
-            entry_price=exit_plan["entry_price"],
-            stop_price=exit_plan["stop_price"],
-            target_price=exit_plan["target_price"],
-            conviction=exit_plan["conviction"],
-            status=exit_plan["status"],
-            lifecycle_stage=exit_plan["lifecycle_stage"],
-            parent_trade_plan_id=(_find_active_trade_plan(session, selected_account, ticker) or TradePlan()).id,
-            rationale=exit_plan["rationale"],
-            source_context=exit_plan["source_context"],
-            linked_position_qty=exit_plan["linked_position_qty"],
+            payload=exit_plan,
+            parent_trade_plan_id=parent_trade_plan.id if parent_trade_plan else None,
         )
         session.add(trade_plan)
         session.commit()
@@ -622,36 +634,10 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
             _mark_trade_plan_reviewed(session, trade_plan, lifecycle_stage="closed" if exit_plan["proposal_qty"] >= exit_plan["linked_position_qty"] else "trimmed", status="executed")
             executed += 1
 
-        proposals_out.append({
-            "proposal_id": proposal.id,
-            "ticker": ticker,
-            "status": proposal.status,
-            "confidence": proposal.confidence,
-            "source_hits": None,
-            "source_combos": ["position_management"],
-            "proposed_qty": proposal.proposed_qty,
-            "reference_price": proposal.reference_price,
-            "target_position_pct": proposal.target_position_pct,
-            "rationale": proposal.rationale,
-            "risk_notes": proposal.risk_notes,
-            "execution": execution,
-        })
-        trade_plans_out.append({
-            "trade_plan_id": trade_plan.id,
-            "ticker": exit_plan["ticker"],
-            "thesis_type": exit_plan["thesis_type"],
-            "timeframe": exit_plan["timeframe"],
-            "direction": exit_plan["direction"],
-            "entry_price": exit_plan["entry_price"],
-            "stop_price": exit_plan["stop_price"],
-            "target_price": exit_plan["target_price"],
-            "conviction": exit_plan["conviction"],
-            "status": trade_plan.status,
-            "lifecycle_stage": trade_plan.lifecycle_stage,
-            "rationale": exit_plan["rationale"],
-            "source_context": exit_plan["source_context"],
-            "linked_position_qty": exit_plan["linked_position_qty"],
-        })
+        proposals_out.append(
+            _serialize_proposal(proposal, source_hits=None, source_combos=["position_management"], execution=execution)
+        )
+        trade_plans_out.append(_serialize_trade_plan(trade_plan))
         created += 1
 
     for candidate in candidates:
@@ -665,29 +651,25 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
         recent_buy = _recent_trade_for_ticker(session, selected_account, ticker, "buy", AUTONOMY_COOLDOWN_MINUTES)
 
         if recent_buy:
-            risk.notes.append(f"Rejected, cooldown active after buy at {recent_buy.timestamp.isoformat()}Z")
-            risk.approved = False
+            _append_risk_rejection(risk, f"Rejected, cooldown active after buy at {recent_buy.timestamp.isoformat()}Z")
 
         active_plan = _find_active_trade_plan(session, selected_account, ticker)
         if active_plan and active_plan.lifecycle_stage in {"entry_candidate", "active"}:
-            risk.notes.append(f"Rejected, duplicate entry suppressed by active trade plan {active_plan.id}")
-            risk.approved = False
+            _append_risk_rejection(risk, f"Rejected, duplicate entry suppressed by active trade plan {active_plan.id}")
 
-        if daily_budget["buy_count"] >= AUTONOMY_MAX_DAILY_NEW_BUYS:
-            risk.notes.append(f"Rejected, daily buy limit reached ({int(daily_budget['buy_count'])}/{AUTONOMY_MAX_DAILY_NEW_BUYS})")
-            risk.approved = False
+        if daily_budget.buy_count >= AUTONOMY_MAX_DAILY_NEW_BUYS:
+            _append_risk_rejection(risk, f"Rejected, daily buy limit reached ({daily_budget.buy_count}/{AUTONOMY_MAX_DAILY_NEW_BUYS})")
 
         max_daily_notional = portfolio.get("total_value", STARTING_CASH) * AUTONOMY_MAX_DAILY_NOTIONAL_PCT
         proposed_notional = float(risk.proposed_qty) * float(candidate.get("price") or 0.0)
-        if (daily_budget["notional"] + proposed_notional) > max_daily_notional:
-            risk.notes.append(
-                f"Rejected, daily notional cap exceeded ({daily_budget['notional'] + proposed_notional:.2f} > {max_daily_notional:.2f})"
+        if (daily_budget.notional + proposed_notional) > max_daily_notional:
+            _append_risk_rejection(
+                risk,
+                f"Rejected, daily notional cap exceeded ({daily_budget.notional + proposed_notional:.2f} > {max_daily_notional:.2f})",
             )
-            risk.approved = False
 
         if latest_signal and latest_signal.acted_on:
-            risk.notes.append("Rejected, latest signal already acted on")
-            risk.approved = False
+            _append_risk_rejection(risk, "Rejected, latest signal already acted on")
 
         status = "approved" if risk.approved else "rejected"
         proposal = TradeProposal(
@@ -709,23 +691,10 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
         session.refresh(proposal)
 
         trade_plan_payload = _build_trade_plan(candidate)
-        trade_plan = TradePlan(
+        trade_plan = _build_trade_plan_model(
             run_id=run.id,
             account_name=selected_account,
-            ticker=trade_plan_payload["ticker"],
-            thesis_type=trade_plan_payload["thesis_type"],
-            timeframe=trade_plan_payload["timeframe"],
-            direction=trade_plan_payload["direction"],
-            entry_price=trade_plan_payload["entry_price"],
-            stop_price=trade_plan_payload["stop_price"],
-            target_price=trade_plan_payload["target_price"],
-            conviction=trade_plan_payload["conviction"],
-            status=trade_plan_payload["status"],
-            lifecycle_stage=trade_plan_payload["lifecycle_stage"],
-            parent_trade_plan_id=None,
-            rationale=trade_plan_payload["rationale"],
-            source_context=trade_plan_payload["source_context"],
-            linked_position_qty=None,
+            payload=trade_plan_payload,
         )
         session.add(trade_plan)
         session.commit()
@@ -766,8 +735,8 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
             session.add(proposal)
             session.commit()
             _mark_trade_plan_reviewed(session, trade_plan, lifecycle_stage="active", status="executed")
-            daily_budget["buy_count"] += 1
-            daily_budget["notional"] += float(risk.proposed_qty) * float(candidate.get("price") or 0.0)
+            daily_budget.buy_count += 1
+            daily_budget.notional += float(risk.proposed_qty) * float(candidate.get("price") or 0.0)
             executed += 1
         elif proposal.status == "approved":
             _mark_trade_plan_reviewed(session, trade_plan, lifecycle_stage="entry_candidate", status="approved")
@@ -775,30 +744,14 @@ def run_autonomous_cycle(session: Session, mode: str | None = None, account_name
             _mark_trade_plan_reviewed(session, trade_plan, lifecycle_stage="rejected", status=proposal.status)
 
         proposals_out.append(
-            {
-                "proposal_id": proposal.id,
-                "ticker": ticker,
-                "status": proposal.status,
-                "confidence": proposal.confidence,
-                "source_hits": candidate.get("source_hits"),
-                "source_combos": candidate.get("source_combos"),
-                "proposed_qty": proposal.proposed_qty,
-                "reference_price": proposal.reference_price,
-                "target_position_pct": proposal.target_position_pct,
-                "rationale": proposal.rationale,
-                "risk_notes": proposal.risk_notes,
-                "execution": execution,
-            }
+            _serialize_proposal(
+                proposal,
+                source_hits=candidate.get("source_hits"),
+                source_combos=candidate.get("source_combos"),
+                execution=execution,
+            )
         )
-        trade_plans_out.append(
-            {
-                "trade_plan_id": trade_plan.id,
-                **trade_plan_payload,
-                "status": trade_plan.status,
-                "lifecycle_stage": trade_plan.lifecycle_stage,
-                "parent_trade_plan_id": trade_plan.parent_trade_plan_id,
-            }
-        )
+        trade_plans_out.append(_serialize_trade_plan(trade_plan))
         if derivative_payload and derivative_idea:
             derivative_ideas_out.append(
                 {

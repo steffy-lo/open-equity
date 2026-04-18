@@ -156,7 +156,6 @@ def _ensure_signal_columns() -> None:
                 conn.execute(text(ddl))
 
 
-<<<<<<< HEAD
 def _ensure_account_columns() -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
