@@ -30,7 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import PORT
 from database import init_db
 from services.scheduler import start_scheduler, stop_scheduler
-from routers import orders, portfolio, prices, history, screener as screener_router, dashboard
+from routers import orders, portfolio, prices, history, screener as screener_router, dashboard, autonomy
 
 # ─────────────────────────────────────────────────────────────
 # Logging
@@ -90,6 +90,7 @@ app.include_router(prices.router)
 app.include_router(history.router)
 app.include_router(screener_router.router)
 app.include_router(dashboard.router)
+app.include_router(autonomy.router)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -113,6 +114,12 @@ def root():
             "watchlist":  "GET|PUT /watchlist",
             "scheduler":  "GET  /scheduler",
             "dashboard":  "GET  /dashboard",
+            "autonomy_run": "POST /autonomy/run",
+            "autonomy_run_summary": "POST /autonomy/run/summary",
+            "autonomy_runs": "GET  /autonomy/runs",
+            "autonomy_proposals": "GET  /autonomy/proposals",
+            "autonomy_trade_plans": "GET  /autonomy/trade-plans",
+            "autonomy_derivative_ideas": "GET  /autonomy/derivative-ideas",
         },
     }
 

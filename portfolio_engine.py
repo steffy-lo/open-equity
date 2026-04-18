@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 def execute_order(
     session:    Session,
+    account_name: str,
     ticker:     str,
     side:       str,
     qty:        float,
@@ -46,9 +47,13 @@ def execute_order(
     fee         = round(fill_price * qty * TRADING_FEE_PCT, 6)
 
     # Fetch current cash
-    state = session.exec(select(PortfolioState).order_by(PortfolioState.id.desc())).first()
+    state = session.exec(
+        select(PortfolioState)
+        .where(PortfolioState.account_name == account_name)
+        .order_by(PortfolioState.id.desc())
+    ).first()
     if not state:
-        state = PortfolioState(cash=STARTING_CASH)
+        state = PortfolioState(account_name=account_name, cash=STARTING_CASH)
         session.add(state)
 
     # ── BUY ───────────────────────────────────────────────────
@@ -60,21 +65,29 @@ def execute_order(
                 f"have ${state.cash:,.2f}"
             )
 
-        pos = session.exec(select(Position).where(Position.ticker == ticker)).first()
+        pos = session.exec(
+            select(Position)
+            .where(Position.account_name == account_name)
+            .where(Position.ticker == ticker)
+        ).first()
         if pos:
             # Weighted average cost basis
             new_total_qty  = pos.qty + qty
             pos.avg_cost   = (pos.qty * pos.avg_cost + qty * fill_price) / new_total_qty
             pos.qty        = new_total_qty
         else:
-            pos = Position(ticker=ticker, qty=qty, avg_cost=fill_price, realized_pnl=0.0)
+            pos = Position(account_name=account_name, ticker=ticker, qty=qty, avg_cost=fill_price, realized_pnl=0.0)
             session.add(pos)
 
         state.cash -= total_cost
 
     # ── SELL ──────────────────────────────────────────────────
     else:
-        pos = session.exec(select(Position).where(Position.ticker == ticker)).first()
+        pos = session.exec(
+            select(Position)
+            .where(Position.account_name == account_name)
+            .where(Position.ticker == ticker)
+        ).first()
         available = pos.qty if pos else 0
         if available < qty:
             raise ValueError(
@@ -96,6 +109,7 @@ def execute_order(
     # Persist trade record
     order_id = str(uuid.uuid4())[:8].upper()
     trade = Trade(
+        account_name= account_name,
         order_id   = order_id,
         ticker     = ticker,
         side       = side,
@@ -115,6 +129,7 @@ def execute_order(
     return {
         "order_id":       order_id,
         "ticker":         ticker,
+        "account_name":   account_name,
         "side":           side,
         "qty":            qty,
         "fill_price":     round(fill_price, 4),
@@ -131,15 +146,19 @@ def execute_order(
 # Portfolio snapshot
 # ─────────────────────────────────────────────────────────────
 
-def get_portfolio_state(session: Session) -> dict:
+def get_portfolio_state(session: Session, account_name: str = "default") -> dict:
     """
     Returns a full portfolio snapshot:
     cash, equity, total value, total return %, all positions with P&L.
     """
-    state = session.exec(select(PortfolioState).order_by(PortfolioState.id.desc())).first()
+    state = session.exec(
+        select(PortfolioState)
+        .where(PortfolioState.account_name == account_name)
+        .order_by(PortfolioState.id.desc())
+    ).first()
     cash  = state.cash if state else STARTING_CASH
 
-    positions     = session.exec(select(Position)).all()
+    positions     = session.exec(select(Position).where(Position.account_name == account_name)).all()
     positions_out = []
     total_equity  = 0.0
     total_realized= 0.0
@@ -178,6 +197,7 @@ def get_portfolio_state(session: Session) -> dict:
 
     return {
         "cash":               round(cash, 2),
+        "account_name":       account_name,
         "equity":             round(total_equity, 2),
         "total_value":        round(total_value, 2),
         "starting_cash":      STARTING_CASH,
@@ -196,7 +216,7 @@ def get_portfolio_state(session: Session) -> dict:
 # Benchmark snapshot (nightly job stores these)
 # ─────────────────────────────────────────────────────────────
 
-def take_benchmark_snapshot(session: Session) -> dict:
+def take_benchmark_snapshot(session: Session, account_name: str = "default") -> dict:
     """
     Store today's portfolio value vs benchmark (SPY).
     Called by the nightly scheduler.
@@ -204,17 +224,18 @@ def take_benchmark_snapshot(session: Session) -> dict:
     today = date.today().isoformat()
 
     # Avoid duplicate snapshots on the same day
+    snapshot_key = f"{account_name}:{today}"
     existing = session.exec(
-        select(BenchmarkSnapshot).where(BenchmarkSnapshot.date == today)
+        select(BenchmarkSnapshot).where(BenchmarkSnapshot.date == snapshot_key)
     ).first()
     if existing:
         return {"date": today, "skipped": True, "reason": "snapshot already taken today"}
 
     spy_price  = get_price_data(BENCHMARK_TICKER)["price"]
-    portfolio  = get_portfolio_state(session)
+    portfolio  = get_portfolio_state(session, account_name=account_name)
 
     snap = BenchmarkSnapshot(
-        date            = today,
+        date            = snapshot_key,
         spy_price       = spy_price,
         portfolio_value = portfolio["total_value"],
         cash            = portfolio["cash"],
@@ -225,24 +246,30 @@ def take_benchmark_snapshot(session: Session) -> dict:
 
     return {
         "date":            today,
+        "account_name":    account_name,
         "spy_price":       spy_price,
         "portfolio_value": portfolio["total_value"],
         "total_return_pct":portfolio["total_return_pct"],
     }
 
 
-def get_benchmark_alpha(session: Session) -> dict:
+def get_benchmark_alpha(session: Session, account_name: str = "default") -> dict:
     """
     Compare portfolio return vs SPY return since first snapshot.
     Returns alpha (portfolio return − SPY return) in percentage points.
     """
-    snapshots = session.exec(
-        select(BenchmarkSnapshot).order_by(BenchmarkSnapshot.date)
-    ).all()
+    prefix = f"{account_name}:"
+    snapshots = [
+        snap for snap in session.exec(
+            select(BenchmarkSnapshot).order_by(BenchmarkSnapshot.date)
+        ).all()
+        if snap.date.startswith(prefix)
+    ]
 
     if len(snapshots) < 2:
         return {
             "message": "Not enough benchmark data yet — check back after a few trading days.",
+            "account_name": account_name,
             "snapshots": len(snapshots),
         }
 
@@ -255,6 +282,7 @@ def get_benchmark_alpha(session: Session) -> dict:
 
     return {
         "period":             f"{first.date} → {latest.date}",
+        "account_name":       account_name,
         "spy_return_pct":     round(spy_return, 2),
         "portfolio_return_pct": round(port_return, 2),
         "alpha_pct":          round(alpha, 2),

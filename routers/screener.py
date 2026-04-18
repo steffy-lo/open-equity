@@ -6,6 +6,7 @@ from sqlmodel import Session, col, select
 
 from database import Signal, get_session
 from services.scheduler import get_scheduler_status
+from services.scan_presets import get_scan_mode, get_scan_preset, list_scan_modes, list_scan_presets
 from services.screener import (
     add_to_watchlist,
     get_latest_signals,
@@ -40,6 +41,8 @@ class ScreenRequest(BaseModel):
     screen_scope: Optional[Literal["watchlist", "custom_universe", "ad_hoc"]] = None
     screen_label: Optional[str] = None
     universe: Optional[str] = None
+    preset: Optional[str] = None
+    scan_mode: Optional[str] = None
 
 
 class WatchlistRequest(BaseModel):
@@ -50,6 +53,25 @@ class WatchlistRequest(BaseModel):
 @router.post("/screen")
 def screen(payload: ScreenRequest, session: Session = Depends(get_session)):
     tickers = [ticker.upper() for ticker in (payload.tickers or [])]
+
+    if payload.preset:
+        try:
+            preset = get_scan_preset(payload.preset)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown preset: {payload.preset}") from exc
+        tickers = preset["tickers"]
+        if not payload.screen_label:
+            payload.screen_label = preset["label"]
+        if not payload.universe:
+            payload.universe = preset["universe"]
+        if not payload.screen_scope:
+            payload.screen_scope = "custom_universe"
+
+    if payload.scan_mode:
+        try:
+            get_scan_mode(payload.scan_mode)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown scan_mode: {payload.scan_mode}") from exc
 
     if payload.save_to_watchlist and tickers:
         add_to_watchlist(tickers)
@@ -62,10 +84,13 @@ def screen(payload: ScreenRequest, session: Session = Depends(get_session)):
             screen_label=payload.screen_label,
             universe=payload.universe,
             use_watchlist=payload.use_watchlist,
+            scan_mode=payload.scan_mode,
         )
         return {
             "screen": {
                 "scanned": len(results),
+                "preset": payload.preset,
+                "scan_mode": payload.scan_mode,
                 "screen_scope": payload.screen_scope or ("watchlist" if payload.use_watchlist and not tickers else "custom_universe" if tickers else "watchlist"),
                 "screen_label": payload.screen_label,
                 "universe": payload.universe,
@@ -90,6 +115,16 @@ def screen(payload: ScreenRequest, session: Session = Depends(get_session)):
         return {"ingested": result}
 
     raise HTTPException(status_code=400, detail="Provide either tickers or signals")
+
+
+@router.get("/screen/presets")
+def screen_presets():
+    return {"presets": list_scan_presets()}
+
+
+@router.get("/screen/modes")
+def screen_modes():
+    return {"modes": list_scan_modes()}
 
 
 @router.get("/signals")

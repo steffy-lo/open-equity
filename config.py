@@ -21,3 +21,19 @@ BENCHMARK_SNAPSHOT_CRON = os.getenv("BENCHMARK_SNAPSHOT_CRON", "0 21 * * 1-5")
 
 DB_PATH = str(BASE_DIR / os.getenv("DB_PATH", "open_equity.db"))
 WATCHLIST_PATH = str(BASE_DIR / os.getenv("WATCHLIST_PATH", "watchlist.json"))
+
+AUTONOMY_MODE = os.getenv("AUTONOMY_MODE", "propose_only")
+AUTONOMY_MAX_POSITION_PCT = float(os.getenv("AUTONOMY_MAX_POSITION_PCT", "0.15"))
+AUTONOMY_POSITION_SIZE_PCT = float(os.getenv("AUTONOMY_POSITION_SIZE_PCT", "0.05"))
+AUTONOMY_MIN_CONFIDENCE = float(os.getenv("AUTONOMY_MIN_CONFIDENCE", str(MIN_SIGNAL_CONFIDENCE)))
+AUTONOMY_MAX_NEW_BUYS_PER_RUN = int(os.getenv("AUTONOMY_MAX_NEW_BUYS_PER_RUN", "3"))
+AUTONOMY_COOLDOWN_MINUTES = int(os.getenv("AUTONOMY_COOLDOWN_MINUTES", "180"))
+AUTONOMY_MAX_DAILY_NEW_BUYS = int(os.getenv("AUTONOMY_MAX_DAILY_NEW_BUYS", "4"))
+AUTONOMY_MAX_DAILY_NOTIONAL_PCT = float(os.getenv("AUTONOMY_MAX_DAILY_NOTIONAL_PCT", "0.20"))
+AUTONOMY_ACCOUNT_NAME = os.getenv("AUTONOMY_ACCOUNT_NAME", "siriv5")
+AUTONOMY_SOURCE_PRESET = os.getenv("AUTONOMY_SOURCE_PRESET", "quality_broad")
+AUTONOMY_SOURCE_MODE = os.getenv("AUTONOMY_SOURCE_MODE", "pullback")
+AUTONOMY_SOURCE_PLAN = os.getenv(
+    "AUTONOMY_SOURCE_PLAN",
+    "quality_broad:pullback,quality_broad:breakout,ai_infra:breakout,fintech_growth:quality_value_momentum",
+)

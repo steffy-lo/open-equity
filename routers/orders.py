@@ -13,6 +13,7 @@ router = APIRouter(tags=["Orders"])
 
 
 class OrderRequest(BaseModel):
+    account_name: str = "default"
     ticker: str
     side: Literal["buy", "sell"]
     qty: float = Field(gt=0)
@@ -25,6 +26,7 @@ def submit_order(payload: OrderRequest, session: Session = Depends(get_session))
     try:
         result = execute_order(
             session=session,
+            account_name=payload.account_name,
             ticker=payload.ticker,
             side=payload.side,
             qty=payload.qty,
