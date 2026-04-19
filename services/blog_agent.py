@@ -27,7 +27,7 @@ from database import (
     BlogPost, BenchmarkSnapshot, Trade, Signal, Position,
     session_scope,
 )
-from services.portfolio_engine import get_portfolio_summary
+from services.portfolio_engine import get_portfolio_state
 from services.research_agent import get_latest_brief
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def build_blog_context() -> dict:
         # ── Portfolio snapshot ─────────────────────────────────
         portfolio_data = {}
         try:
-            portfolio_data = get_portfolio_summary(session)
+            portfolio_data = get_portfolio_state(session)
         except Exception as exc:
             logger.warning(f"[blog_agent] Portfolio fetch failed: {exc}")
 

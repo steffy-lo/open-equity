@@ -35,10 +35,26 @@ from config import (
 )
 from database import Signal, Trade, Position, session_scope
 from services.market_data import get_price_data
-from services.portfolio_engine import execute_order, get_portfolio_summary
+from services.portfolio_engine import execute_order, get_portfolio_state
 from services.research_agent import get_latest_brief
 
 logger = logging.getLogger(__name__)
+
+
+def _dedupe_signals_by_ticker(signals: list[Signal]) -> list[Signal]:
+    """Keep the highest-confidence, most recent signal per ticker."""
+    best_by_ticker: dict[str, Signal] = {}
+    for signal in signals:
+        existing = best_by_ticker.get(signal.ticker)
+        if existing is None:
+            best_by_ticker[signal.ticker] = signal
+            continue
+        if signal.confidence > existing.confidence:
+            best_by_ticker[signal.ticker] = signal
+            continue
+        if signal.confidence == existing.confidence and signal.timestamp > existing.timestamp:
+            best_by_ticker[signal.ticker] = signal
+    return list(best_by_ticker.values())
 
 
 # ─────────────────────────────────────────────────────────────
@@ -56,10 +72,11 @@ def run_entry_pass() -> dict:
     with session_scope() as session:
 
         # ── Portfolio snapshot ─────────────────────────────────
-        portfolio     = get_portfolio_summary(session)
+        portfolio     = get_portfolio_state(session)
         total_value   = portfolio["total_value"]
         cash          = portfolio["cash"]
-        exposure_pct  = portfolio["equity_value"] / total_value if total_value > 0 else 0
+        equity_value  = portfolio["equity"]
+        exposure_pct  = equity_value / total_value if total_value > 0 else 0
 
         if exposure_pct >= EXEC_MAX_EXPOSURE_PCT:
             logger.info(
@@ -96,8 +113,9 @@ def run_entry_pass() -> dict:
             .where(Signal.acted_on == False)        # noqa: E712
             .where(Signal.confidence >= MIN_SIGNAL_CONFIDENCE)
             .where(Signal.timestamp >= cutoff)
-            .order_by(col(Signal.confidence).desc())
+            .order_by(col(Signal.confidence).desc(), col(Signal.timestamp).desc())
         ).all()
+        signals = _dedupe_signals_by_ticker(signals)
 
         held_tickers = {p.ticker for p in session.exec(select(Position)).all() if p.qty > 0}
 
