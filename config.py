@@ -21,3 +21,24 @@ BENCHMARK_SNAPSHOT_CRON = os.getenv("BENCHMARK_SNAPSHOT_CRON", "0 21 * * 1-5")
 
 DB_PATH = str(BASE_DIR / os.getenv("DB_PATH", "open_equity.db"))
 WATCHLIST_PATH = str(BASE_DIR / os.getenv("WATCHLIST_PATH", "watchlist.json"))
+
+# ─────────────────────────────────────────────────────────────
+# Autonomous Trading Pipeline
+# ─────────────────────────────────────────────────────────────
+
+# Execution agent risk parameters
+EXEC_MAX_POSITION_PCT:  float = float(os.getenv("EXEC_MAX_POSITION_PCT",  "0.10"))  # 10%
+EXEC_MAX_EXPOSURE_PCT:  float = float(os.getenv("EXEC_MAX_EXPOSURE_PCT",  "0.80"))  # 80%
+EXEC_STOP_LOSS_PCT:     float = float(os.getenv("EXEC_STOP_LOSS_PCT",     "0.08"))  # 8%
+EXEC_TAKE_PROFIT_PCT:   float = float(os.getenv("EXEC_TAKE_PROFIT_PCT",   "0.20"))  # 20%
+EXEC_MAX_TRADES_PER_DAY: int  = int(os.getenv("EXEC_MAX_TRADES_PER_DAY",  "3"))
+ 
+
+# Blog output
+BLOG_OUTPUT_DIR: str = os.getenv("BLOG_OUTPUT_DIR", "blogs/trading")
+ 
+# Pipeline scheduler crons (5-field, America/New_York)
+RESEARCH_CONTEXT_CRON: str = os.getenv("RESEARCH_CONTEXT_CRON", "0 7 * * 1")      # Mon 7am
+ENTRY_PASS_CRON:       str = os.getenv("ENTRY_PASS_CRON",       "35 9 * * 1-5")   # Mon–Fri 9:35am
+EXIT_PASS_CRON:        str = os.getenv("EXIT_PASS_CRON",         "45 15 * * 1-5") # Mon–Fri 3:45pm
+BLOG_CONTEXT_CRON:     str = os.getenv("BLOG_CONTEXT_CRON",     "0 18 * * 5")     # Sunday 6pm
