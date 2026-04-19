@@ -30,7 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import PORT
 from database import init_db
 from services.scheduler import start_scheduler, stop_scheduler
-from routers import orders, portfolio, prices, history, screener as screener_router, dashboard
+from routers import orders, portfolio, prices, history, screener, dashboard, trading_pipeline
 
 # ─────────────────────────────────────────────────────────────
 # Logging
@@ -88,8 +88,9 @@ app.include_router(orders.router)
 app.include_router(portfolio.router)
 app.include_router(prices.router)
 app.include_router(history.router)
-app.include_router(screener_router.router)
+app.include_router(screener.router)
 app.include_router(dashboard.router)
+app.include_router(trading_pipeline.router)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -113,6 +114,13 @@ def root():
             "watchlist":  "GET|PUT /watchlist",
             "scheduler":  "GET  /scheduler",
             "dashboard":  "GET  /dashboard",
+            "research_context": "GET  /research/context",
+            "research":         "POST /research  |  GET /research/latest",
+            "blog_context":     "GET  /blog/context",
+            "blog":             "POST /blog  |  GET /blog  |  GET /blog/{id}",
+            "pipeline_entry":   "POST /pipeline/entry",
+            "pipeline_exit":    "POST /pipeline/exit",
+            "pipeline_status":  "GET  /pipeline/status",
         },
     }
 
