@@ -34,6 +34,10 @@ from config import (
     ENTRY_PASS_CRON,
     EXIT_PASS_CRON,
     BLOG_CONTEXT_CRON,
+    HK_ENTRY_PASS_CRON_AM,
+    HK_EXIT_PASS_CRON_AM,
+    HK_ENTRY_PASS_CRON_PM,
+    HK_EXIT_PASS_CRON_PM,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,14 +150,14 @@ def _job_research_context():
 # ─────────────────────────────────────────────────────────────
  
 def _job_entry_pass():
-    logger.info("[scheduler] 📈 Running entry pass...")
+    logger.info("[scheduler] 📈 Running US entry pass...")
     try:
         from services.execution_agent import run_entry_pass
-        result  = run_entry_pass()
+        result  = run_entry_pass(market="US")
         placed  = result.get("placed", [])
         skipped = result.get("skipped", [])
         logger.info(
-            f"[scheduler] ✅ Entry pass: {len(placed)} orders placed, {len(skipped)} skipped"
+            f"[scheduler] ✅ US entry pass: {len(placed)} orders placed, {len(skipped)} skipped"
         )
         for t in placed:
             logger.info(
@@ -169,14 +173,14 @@ def _job_entry_pass():
 # ─────────────────────────────────────────────────────────────
  
 def _job_exit_pass():
-    logger.info("[scheduler] 📉 Running exit pass...")
+    logger.info("[scheduler] 📉 Running US exit pass...")
     try:
         from services.execution_agent import run_exit_pass
-        result = run_exit_pass()
+        result = run_exit_pass(market="US")
         exits  = result.get("exits", [])
         held   = result.get("still_held", [])
         logger.info(
-            f"[scheduler] ✅ Exit pass: {len(exits)} closed, {len(held)} held"
+            f"[scheduler] ✅ US exit pass: {len(exits)} closed, {len(held)} held"
         )
         for e in exits:
             logger.info(
@@ -213,11 +217,59 @@ def _job_blog_context():
 
 
 
+def _job_hk_entry_pass_am():
+    logger.info("[scheduler] 🇭🇰 Running HK AM entry pass...")
+    try:
+        from services.execution_agent import run_entry_pass
+        result = run_entry_pass(market="HK")
+        placed = result.get("placed", [])
+        skipped = result.get("skipped", [])
+        logger.info(f"[scheduler] ✅ HK AM entry pass: {len(placed)} orders placed, {len(skipped)} skipped")
+    except Exception as exc:
+        logger.error(f"[scheduler] HK AM entry pass failed: {exc}", exc_info=True)
+
+
+def _job_hk_exit_pass_am():
+    logger.info("[scheduler] 🇭🇰 Running HK lunch exit pass...")
+    try:
+        from services.execution_agent import run_exit_pass
+        result = run_exit_pass(market="HK")
+        exits = result.get("exits", [])
+        held = result.get("still_held", [])
+        logger.info(f"[scheduler] ✅ HK lunch exit pass: {len(exits)} closed, {len(held)} held")
+    except Exception as exc:
+        logger.error(f"[scheduler] HK lunch exit pass failed: {exc}", exc_info=True)
+
+
+def _job_hk_entry_pass_pm():
+    logger.info("[scheduler] 🇭🇰 Running HK PM entry pass...")
+    try:
+        from services.execution_agent import run_entry_pass
+        result = run_entry_pass(market="HK")
+        placed = result.get("placed", [])
+        skipped = result.get("skipped", [])
+        logger.info(f"[scheduler] ✅ HK PM entry pass: {len(placed)} orders placed, {len(skipped)} skipped")
+    except Exception as exc:
+        logger.error(f"[scheduler] HK PM entry pass failed: {exc}", exc_info=True)
+
+
+def _job_hk_exit_pass_pm():
+    logger.info("[scheduler] 🇭🇰 Running HK close exit pass...")
+    try:
+        from services.execution_agent import run_exit_pass
+        result = run_exit_pass(market="HK")
+        exits = result.get("exits", [])
+        held = result.get("still_held", [])
+        logger.info(f"[scheduler] ✅ HK close exit pass: {len(exits)} closed, {len(held)} held")
+    except Exception as exc:
+        logger.error(f"[scheduler] HK close exit pass failed: {exc}", exc_info=True)
+
+
 # ─────────────────────────────────────────────────────────────
 # Scheduler lifecycle
 # ─────────────────────────────────────────────────────────────
 
-def _parse_cron(cron_str: str) -> CronTrigger:
+def _parse_cron_for_timezone(cron_str: str, timezone: str) -> CronTrigger:
     """Parse '0 20 * * 1-5' style cron into APScheduler trigger."""
     parts = cron_str.strip().split()
     if len(parts) != 5:
@@ -229,8 +281,16 @@ def _parse_cron(cron_str: str) -> CronTrigger:
         day=day,
         month=month,
         day_of_week=day_of_week,
-        timezone="America/New_York",
+        timezone=timezone,
     )
+
+
+def _parse_cron(cron_str: str) -> CronTrigger:
+    return _parse_cron_for_timezone(cron_str, "America/New_York")
+
+
+def _parse_cron_hk(cron_str: str) -> CronTrigger:
+    return _parse_cron_for_timezone(cron_str, "Asia/Hong_Kong")
 
 
 def start_scheduler():
@@ -300,10 +360,48 @@ def start_scheduler():
         misfire_grace_time=1800,
     )
 
+    # ── Hong Kong Market Jobs ─────────────────────────────────────
+    _scheduler.add_job(
+        _job_hk_entry_pass_am,
+        trigger=_parse_cron_hk(HK_ENTRY_PASS_CRON_AM),
+        id="hk_entry_pass_am",
+        name="HK Daily entry pass (AM) — signal → order",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+
+    _scheduler.add_job(
+        _job_hk_exit_pass_am,
+        trigger=_parse_cron_hk(HK_EXIT_PASS_CRON_AM),
+        id="hk_exit_pass_am",
+        name="HK Daily exit pass (AM) — stop-loss / take-profit",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+
+    _scheduler.add_job(
+        _job_hk_entry_pass_pm,
+        trigger=_parse_cron_hk(HK_ENTRY_PASS_CRON_PM),
+        id="hk_entry_pass_pm",
+        name="HK Daily entry pass (PM) — signal → order",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+
+    _scheduler.add_job(
+        _job_hk_exit_pass_pm,
+        trigger=_parse_cron_hk(HK_EXIT_PASS_CRON_PM),
+        id="hk_exit_pass_pm",
+        name="HK Daily exit pass (PM) — stop-loss / take-profit",
+        replace_existing=True,
+        misfire_grace_time=120,
+    )
+
     _scheduler.start()
     logger.info(
-        "[scheduler] 🚀 APScheduler started with 7 jobs: "
-        "nightly_screen | intraday_screen | benchmark_snapshot | research context | entry pass | exit pass | blog context"
+        "[scheduler] 🚀 APScheduler started with 11 jobs: "
+        "nightly_screen | intraday_screen | benchmark_snapshot | research context | entry pass | exit pass | blog context | "
+        "hk entry pass AM | hk exit pass AM | hk entry pass PM | hk exit pass PM"
     )
 
 
