@@ -206,6 +206,7 @@ Research brief updates send a short market summary with strategy, themes, watchl
 | Exit pass (PM) | 4:00pm Mon–Fri | Checks HK close-session exits |
 
 Adjust schedules in `.env` using standard 5-field cron syntax.
+The weekly blog flow is split into two jobs: `/blog/context` prep at Saturday 9:00am ET, then OpenClaw `/blog` generation/submission at Saturday 9:20am ET.
 
 ### Autonomous research generation
 

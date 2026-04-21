@@ -51,7 +51,7 @@ US_PREOPEN_SCREEN_CRON: str = os.getenv("US_PREOPEN_SCREEN_CRON", "15 9 * * 1-5"
 US_MIDDAY_SCREEN_CRON: str = os.getenv("US_MIDDAY_SCREEN_CRON", "45 12 * * 1-5")
 ENTRY_PASS_CRON: str = os.getenv("ENTRY_PASS_CRON", "35 9 * * 1-5")
 EXIT_PASS_CRON: str = os.getenv("EXIT_PASS_CRON", "45 15 * * 1-5")
-BLOG_CONTEXT_CRON: str = os.getenv("BLOG_CONTEXT_CRON", "0 18 * * 5")
+BLOG_CONTEXT_CRON: str = os.getenv("BLOG_CONTEXT_CRON", "0 9 * * 6")
 
 # Hong Kong session pipeline crons (5-field, Asia/Hong_Kong)
 HK_RESEARCH_CONTEXT_CRON: str = os.getenv("HK_RESEARCH_CONTEXT_CRON", "0 7 * * 1")
