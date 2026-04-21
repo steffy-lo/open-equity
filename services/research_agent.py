@@ -17,11 +17,9 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-import requests
 from sqlmodel import col, select
 
 from config import (
-    OPENCLAW_GATEWAY_URL,
     RESEARCH_UPDATE_ACCOUNT_ID,
     RESEARCH_UPDATE_CHANNEL,
     RESEARCH_UPDATE_TOPIC,
@@ -35,6 +33,7 @@ from services.markets import (
     normalize_market_tickers,
     normalize_ticker,
 )
+from services.openclaw_notify import send_openclaw_message
 from services.screener import add_to_watchlist, load_watchlist, remove_from_watchlist
 
 logger = logging.getLogger(__name__)
@@ -266,23 +265,17 @@ def _send_research_update(message: str) -> dict:
     if not RESEARCH_UPDATE_TOPIC:
         return {"ok": False, "skipped": True, "reason": "research_updates_disabled"}
 
-    payload = {
-        "accountId": RESEARCH_UPDATE_ACCOUNT_ID,
-        "channel": RESEARCH_UPDATE_CHANNEL,
-        "to": RESEARCH_UPDATE_TOPIC,
-        "message": message,
-    }
-    try:
-        response = requests.post(
-            f"{OPENCLAW_GATEWAY_URL.rstrip('/')}/messages",
-            json=payload,
-            timeout=15,
-        )
-        response.raise_for_status()
+    result = send_openclaw_message(
+        account_id=RESEARCH_UPDATE_ACCOUNT_ID,
+        channel=RESEARCH_UPDATE_CHANNEL,
+        target=RESEARCH_UPDATE_TOPIC,
+        message=message,
+    )
+    if result.get("ok"):
         return {"ok": True, "target": RESEARCH_UPDATE_TOPIC}
-    except Exception as exc:
-        logger.warning(f"[research_agent] Research update delivery failed: {exc}")
-        return {"ok": False, "target": RESEARCH_UPDATE_TOPIC, "error": str(exc)}
+
+    logger.warning(f"[research_agent] Research update delivery failed: {result.get('error')}")
+    return {"ok": False, "target": RESEARCH_UPDATE_TOPIC, "error": result.get("error")}
 
 
 

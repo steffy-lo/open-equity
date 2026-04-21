@@ -19,17 +19,16 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
 from sqlmodel import col, select
 
 from config import (
     BLOG_FORWARD_SUMMARY_MAX_CHARS,
     BLOG_FORWARD_TOPIC,
     BLOG_OUTPUT_DIR,
-    OPENCLAW_GATEWAY_URL,
 )
 from database import BenchmarkSnapshot, BlogPost, Position, Signal, Trade, session_scope
 from services.markets import infer_market
+from services.openclaw_notify import send_openclaw_message
 from services.portfolio_engine import get_portfolio_state
 from services.research_agent import get_latest_brief
 
@@ -349,24 +348,18 @@ def _forward_blog_post(title: str, summary: str, content: str, target: str) -> d
         return {"ok": False, "skipped": True, "reason": "blog_forward_disabled"}
 
     message = _build_forward_message(title=title, summary=summary, content=content)
-    payload = {
-        "accountId": "default",
-        "channel": "telegram",
-        "to": target,
-        "message": message,
-    }
-    try:
-        response = requests.post(
-            f"{OPENCLAW_GATEWAY_URL.rstrip('/')}/messages",
-            json=payload,
-            timeout=15,
-        )
-        response.raise_for_status()
+    result = send_openclaw_message(
+        account_id="default",
+        channel="telegram",
+        target=target,
+        message=message,
+    )
+    if result.get("ok"):
         logger.info(f"[blog_agent] Forwarded blog post to {target}")
         return {"ok": True, "target": target}
-    except Exception as exc:
-        logger.warning(f"[blog_agent] Blog forward failed for {target}: {exc}")
-        return {"ok": False, "target": target, "error": str(exc)}
+
+    logger.warning(f"[blog_agent] Blog forward failed for {target}: {result.get('error')}")
+    return {"ok": False, "target": target, "error": result.get("error")}
 
 
 

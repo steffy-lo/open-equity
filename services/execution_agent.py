@@ -23,7 +23,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-import requests
 from sqlmodel import select, col
 
 from config import (
@@ -33,7 +32,6 @@ from config import (
     EXEC_TAKE_PROFIT_PCT,
     EXEC_MAX_TRADES_PER_DAY,
     MIN_SIGNAL_CONFIDENCE,
-    OPENCLAW_GATEWAY_URL,
     TRADE_UPDATE_ACCOUNT_ID,
     TRADE_UPDATE_CHANNEL,
     TRADE_UPDATE_TOPIC,
@@ -41,6 +39,7 @@ from config import (
 from database import Signal, Trade, Position, session_scope
 from services.market_data import get_price_data
 from services.markets import Market, infer_market, market_currency_prefix
+from services.openclaw_notify import send_openclaw_message
 from services.portfolio_engine import execute_order, get_portfolio_state
 from services.research_agent import get_latest_brief
 
@@ -51,23 +50,17 @@ def _send_trade_update(message: str) -> dict:
     if not TRADE_UPDATE_TOPIC:
         return {"ok": False, "skipped": True, "reason": "trade_updates_disabled"}
 
-    payload = {
-        "accountId": TRADE_UPDATE_ACCOUNT_ID,
-        "channel": TRADE_UPDATE_CHANNEL,
-        "to": TRADE_UPDATE_TOPIC,
-        "message": message,
-    }
-    try:
-        response = requests.post(
-            f"{OPENCLAW_GATEWAY_URL.rstrip('/')}/messages",
-            json=payload,
-            timeout=15,
-        )
-        response.raise_for_status()
+    result = send_openclaw_message(
+        account_id=TRADE_UPDATE_ACCOUNT_ID,
+        channel=TRADE_UPDATE_CHANNEL,
+        target=TRADE_UPDATE_TOPIC,
+        message=message,
+    )
+    if result.get("ok"):
         return {"ok": True, "target": TRADE_UPDATE_TOPIC}
-    except Exception as exc:
-        logger.warning(f"[exec_agent] Trade update delivery failed: {exc}")
-        return {"ok": False, "target": TRADE_UPDATE_TOPIC, "error": str(exc)}
+
+    logger.warning(f"[exec_agent] Trade update delivery failed: {result.get('error')}")
+    return {"ok": False, "target": TRADE_UPDATE_TOPIC, "error": result.get("error")}
 
 
 def _format_trade_update(*, side: str, ticker: str, qty: int | float, fill_price: float, note: str, portfolio: dict, position: Optional[dict] = None, market: Market = "US", currency: str | None = None) -> str:
