@@ -1,0 +1,12 @@
+{
+  "tickers": [
+    "AMZN",
+    "AVGO",
+    "GOOGL",
+    "META",
+    "MSFT",
+    "NVDA"
+  ],
+  "market": "US",
+  "updated_at": "2026-04-21T08:10:02.881155"
+}
