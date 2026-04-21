@@ -40,7 +40,7 @@ Base URL: `http://localhost:5000`
 ## Core Workflows
 
 ### Workflow A — Screening Run
-_Triggered by: "Screen my watchlist", "Find me buy candidates", or the nightly scheduler_
+_Triggered by: "Screen my watchlist", "Find me buy candidates", or a scheduled market-session screen_
 
 1. Call TradingView Screener skill with the watchlist tickers
 2. For each ticker with confidence ≥ 0.70:

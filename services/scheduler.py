@@ -9,7 +9,7 @@ Shared market-session structure:
   • midday screen refresh
   • market-specific entry / exit execution
 
-US also keeps the broader nightly screen, benchmark snapshot, and weekly blog prep.
+US also keeps benchmark snapshot and weekly blog prep.
 HK retains AM/PM entry and exit windows because the market has a lunch break.
 """
 
@@ -33,7 +33,6 @@ from config import (
     HK_PREOPEN_SCREEN_CRON,
     HK_RESEARCH_CONTEXT_CRON,
     RESEARCH_CONTEXT_CRON,
-    SCREEN_SCHEDULE_CRON,
     US_MIDDAY_SCREEN_CRON,
     US_PREOPEN_SCREEN_CRON,
 )
@@ -66,25 +65,6 @@ def _build_signal_candidates(session: Session, market: Market) -> list[str]:
 # ─────────────────────────────────────────────────────────────
 # Job definitions
 # ─────────────────────────────────────────────────────────────
-
-def _job_nightly_screen():
-    logger.info("[scheduler] 🔍 Running nightly full watchlist screen...")
-    try:
-        with Session(engine) as session:
-            tickers = load_watchlist()
-            if not tickers:
-                logger.warning("[scheduler] Watchlist is empty, skipping screen.")
-                return
-            results = run_screen(tickers=tickers, session=session)
-            buys = [result for result in results if result["signal"] == "buy"]
-            flags = [result for result in results if result["signal"] == "flag"]
-            logger.info(
-                f"[scheduler] ✅ Nightly screen complete: {len(tickers)} tickers → {len(buys)} buys, {len(flags)} flags"
-            )
-    except Exception as exc:
-        logger.error(f"[scheduler] Nightly screen failed: {exc}", exc_info=True)
-
-
 
 def _job_benchmark_snapshot():
     logger.info("[scheduler] 📸 Taking benchmark snapshot...")
@@ -321,7 +301,6 @@ def start_scheduler():
     _scheduler = BackgroundScheduler(timezone=US_TIMEZONE)
 
     jobs = [
-        (_job_nightly_screen, _parse_cron(SCREEN_SCHEDULE_CRON), "nightly_screen", "Nightly full watchlist screen", 300),
         (_job_benchmark_snapshot, _parse_cron(BENCHMARK_SNAPSHOT_CRON), "benchmark_snapshot", "Daily benchmark snapshot", 300),
         (_job_research_context_us, _parse_cron(RESEARCH_CONTEXT_CRON), "research_context_us", "US weekly research context prep", 600),
         (_job_preopen_screen_us, _parse_cron(US_PREOPEN_SCREEN_CRON), "preopen_screen_us", "US pre-open screen", 300),

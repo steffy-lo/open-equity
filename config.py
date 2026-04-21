@@ -15,7 +15,6 @@ BENCHMARK_TICKER = os.getenv("BENCHMARK_TICKER", "SPY")
 PRICE_CACHE_TTL = int(os.getenv("PRICE_CACHE_TTL", "60"))
 MIN_SIGNAL_CONFIDENCE = float(os.getenv("MIN_SIGNAL_CONFIDENCE", "0.70"))
 
-SCREEN_SCHEDULE_CRON = os.getenv("SCREEN_SCHEDULE_CRON", "0 20 * * 1-5")
 BENCHMARK_SNAPSHOT_CRON = os.getenv("BENCHMARK_SNAPSHOT_CRON", "0 21 * * 1-5")
 
 DB_PATH = str(BASE_DIR / os.getenv("DB_PATH", "open_equity.db"))

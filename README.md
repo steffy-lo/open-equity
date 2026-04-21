@@ -191,7 +191,6 @@ Research brief updates send a short market summary with strategy, themes, watchl
 | Entry pass | 9:35am Mon–Fri | Consumes stored buy signals and executes eligible entries |
 | Midday screen | 12:45pm Mon–Fri | Refreshes US signals during the trading session |
 | Exit pass | 3:45pm Mon–Fri | Checks stop-loss and take-profit exits |
-| Nightly screen | 8:00pm Mon–Fri | Runs a broader end-of-day watchlist scan |
 | Benchmark snapshot | 9:00pm Mon–Fri | Stores daily portfolio value vs SPY |
 
 ### HK session pipeline
