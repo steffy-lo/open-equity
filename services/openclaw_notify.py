@@ -1,10 +1,15 @@
 import json
 import logging
+import os
+import shutil
 import subprocess
 from typing import Any
 
 
 logger = logging.getLogger(__name__)
+
+
+OPENCLAW_BIN = os.getenv("OPENCLAW_BIN") or shutil.which("openclaw") or "/home/ubuntu/.npm-global/bin/openclaw"
 
 
 def _telegram_target_parts(target: str) -> tuple[str, str | None]:
@@ -23,7 +28,7 @@ def send_openclaw_message(*, channel: str, target: str, message: str, account_id
         return {"ok": False, "skipped": True, "reason": "missing_target"}
 
     command = [
-        "openclaw",
+        OPENCLAW_BIN,
         "message",
         "send",
         "--json",
