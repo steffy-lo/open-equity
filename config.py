@@ -39,6 +39,18 @@ BLOG_OUTPUT_DIR: str = os.getenv("BLOG_OUTPUT_DIR", "blogs/trading")
 BLOG_FORWARD_TOPIC: str = os.getenv("BLOG_FORWARD_TOPIC", "")
 BLOG_FORWARD_SUMMARY_MAX_CHARS: int = int(os.getenv("BLOG_FORWARD_SUMMARY_MAX_CHARS", "4000"))
 
+# Optional momentum discovery scan, used to find off-watchlist US/HK candidates.
+MOMENTUM_SCREENER_ENABLED: bool = os.getenv("MOMENTUM_SCREENER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+MOMENTUM_SCREENER_PYTHON: str = os.getenv(
+    "MOMENTUM_SCREENER_PYTHON",
+    str(BASE_DIR.parent / "skills" / "tradingview-screener" / ".venv" / "bin" / "python3"),
+)
+MOMENTUM_SCAN_SCRIPT: str = os.getenv("MOMENTUM_SCAN_SCRIPT", str(BASE_DIR / "scripts" / "momentum_scan.py"))
+MOMENTUM_SCAN_LIMIT: int = int(os.getenv("MOMENTUM_SCAN_LIMIT", "8"))
+MOMENTUM_MIN_PRICE: float = float(os.getenv("MOMENTUM_MIN_PRICE", "3"))
+MOMENTUM_MIN_MARKET_CAP: float = float(os.getenv("MOMENTUM_MIN_MARKET_CAP", "1000000000"))
+MOMENTUM_MIN_AVG_VOLUME: float = float(os.getenv("MOMENTUM_MIN_AVG_VOLUME", "500000"))
+
 # Pipeline update notifications. If a topic is blank, that update type is skipped.
 TRADE_UPDATE_CHANNEL: str = os.getenv("TRADE_UPDATE_CHANNEL", "telegram")
 TRADE_UPDATE_ACCOUNT_ID: str = os.getenv("TRADE_UPDATE_ACCOUNT_ID", "default")
