@@ -18,7 +18,7 @@ for OpenClaw's paper trading and equity screening workflows.
 cd open-equity
 
 # 2. Create virtualenv
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
 # 3. Install dependencies
@@ -26,15 +26,31 @@ pip install -r requirements.txt
 
 # 4. Configure environment
 cp .env.example .env
-# Edit .env to set STARTING_CASH, fee %, etc.
+# Edit .env to set cash, fees, cron overrides, and private delivery targets.
 
 # 5. Start server
-python main.py
+python3 main.py
 # → Running on http://localhost:5000
 # → Docs at   http://localhost:5000/docs
 ```
 
 ---
+
+## Expected Autonomous Architecture
+
+The autonomous pipeline is split across two layers:
+
+1. **This server (`open-equity`)**
+   - stores portfolio, trades, signals, watchlist, benchmark snapshots, research briefs, and blog posts
+   - runs in-process APScheduler jobs for market-session prep and execution
+   - exposes data-rich endpoints such as `/research/context` and `/blog/context`
+
+2. **OpenClaw automation jobs**
+   - call `/research/context` and submit a structured brief to `POST /research`
+   - call `/blog/context` and submit the finished markdown review to `POST /blog`
+   - can post concise pipeline updates to Telegram when private delivery targets are configured in `.env`
+
+That means `/research/context` and `/blog/context` are **prep jobs**, while `POST /research` and `POST /blog` are **follow-up OpenClaw jobs** that should run shortly afterwards.
 
 ## API Quick Reference
 
@@ -138,19 +154,27 @@ curl "http://localhost:5000/history?ticker=NVDA"
 curl http://localhost:5000/benchmark
 ```
 
-### Manual autonomous pipeline triggers
+### Manual autonomous research and pipeline triggers
 
 ```bash
-# US market (default)
+# Research context
+curl "http://localhost:5000/research/context?market=US"
+curl "http://localhost:5000/research/context?market=HK"
+
+# Latest market-specific research brief
+curl "http://localhost:5000/research/latest?market=US"
+curl "http://localhost:5000/research/latest?market=HK"
+
+# US market execution
 curl -X POST "http://localhost:5000/pipeline/entry"
 curl -X POST "http://localhost:5000/pipeline/exit"
 
-# Hong Kong market
+# Hong Kong market execution
 curl -X POST "http://localhost:5000/pipeline/entry?market=HK"
 curl -X POST "http://localhost:5000/pipeline/exit?market=HK"
 ```
 
-`GET /pipeline/status` now returns separate last-run results for US and HK passes.
+`GET /pipeline/status` returns separate last-run results for US and HK entry and exit passes.
 
 ### Autonomous trade updates to Telegram
 
@@ -161,22 +185,89 @@ Configure in `.env`:
 ```bash
 TRADE_UPDATE_CHANNEL=telegram
 TRADE_UPDATE_ACCOUNT_ID=default
-TRADE_UPDATE_TOPIC=telegram:-1003765209717:428
+TRADE_UPDATE_TOPIC=
+RESEARCH_UPDATE_CHANNEL=telegram
+RESEARCH_UPDATE_ACCOUNT_ID=default
+RESEARCH_UPDATE_TOPIC=
 ```
 
-Each update includes ticker, side, size, execution price, reason or note, and resulting cash or position context.
+Leave the topic fields blank in repo-tracked examples and set the real Telegram targets only in your private `.env`.
+Trade updates include ticker, side, size, execution price, reason or note, and resulting cash or position context.
+Research brief updates send a short market summary with strategy, themes, watchlist adds/removes, and key risk.
 
 ---
 
 ## Background Jobs
 
+### Server-side jobs (live inside `open-equity`)
+
+These jobs are configured by `.env` and run inside the FastAPI process via APScheduler.
+
+#### US session pipeline
+
 | Job | Schedule (ET) | What it does |
 |---|---|---|
-| Nightly screen | 8pm Mon–Fri | Full watchlist scan, stores signals |
-| Intraday screen | Every 15min 9am–4pm Mon–Fri | Re-scans recent buy candidates + open positions |
-| Benchmark snapshot | 9pm Mon–Fri | Stores daily portfolio value vs SPY |
+| Research context | 7:00am Monday | Prepares weekly US research context for the OpenClaw research writer |
+| Pre-open screen | 9:15am Mon–Fri | Builds fresh US signals before the entry pass |
+| Entry pass | 9:35am Mon–Fri | Consumes stored buy signals and executes eligible entries |
+| Midday screen | 12:45pm Mon–Fri | Refreshes US signals during the trading session |
+| Exit pass | 3:45pm Mon–Fri | Checks stop-loss and take-profit exits |
+| Benchmark snapshot | 9:00pm Mon–Fri | Stores daily portfolio value vs SPY |
+
+#### HK session pipeline
+
+| Job | Schedule (HKT) | What it does |
+|---|---|---|
+| Research context | 7:00am Monday | Prepares weekly HK research context for the OpenClaw research writer |
+| Pre-open screen | 9:15am Mon–Fri | Builds fresh HK signals before the AM entry pass |
+| Entry pass (AM) | 9:30am Mon–Fri | Consumes stored HK buy signals and executes eligible entries |
+| Exit pass (AM) | 12:00pm Mon–Fri | Checks HK lunch-session exits |
+| Midday screen | 12:45pm Mon–Fri | Refreshes HK signals before the PM session |
+| Entry pass (PM) | 1:00pm Mon–Fri | Consumes refreshed HK buy signals and executes eligible entries |
+| Exit pass (PM) | 4:00pm Mon–Fri | Checks HK close-session exits |
+
+#### Weekly blog prep
+
+| Job | Schedule (ET) | What it does |
+|---|---|---|
+| Blog context | Saturday 9:00am | Prepares the weekly review context for the OpenClaw blog writer |
 
 Adjust schedules in `.env` using standard 5-field cron syntax.
+
+### OpenClaw jobs to enable after deploy
+
+These jobs are expected to live in OpenClaw, not in the server process. They should be enabled after the PR is deployed and the live `open-equity` server is restarted.
+
+| Job | Schedule | Purpose |
+|---|---|---|
+| Weekly US research brief | Monday 7:15am ET | Fetch `/research/context?market=US`, generate a structured JSON brief, then `POST /research` |
+| Weekly HK research brief | Monday 7:15am HKT | Fetch `/research/context?market=HK`, generate a structured JSON brief, then `POST /research` |
+| Weekly blog review | Saturday 9:20am ET | Fetch `/blog/context`, write the markdown review, then `POST /blog` |
+
+### Autonomous research generation
+
+The server-side scheduler only prepares context. The actual research brief must be generated by OpenClaw and posted back to the API.
+
+Recommended flow per market:
+1. `GET /research/context?market=US|HK`
+2. Generate a JSON brief that matches `output_contract`
+3. Submit it with `python3 scripts/submit_research_brief.py --market US|HK`
+4. On ingest, the server stores the brief, applies watchlist changes, and optionally sends a concise research update to the configured pipeline topic
+
+The context payload includes:
+- `output_contract.schema` for the exact JSON shape
+- `output_contract.rules` for formatting and market-specific ticker handling
+- normalized HK ticker expectations like `0700.HK`
+
+On ingest, the server also normalizes market tickers before applying watchlist changes, so bare HK codes like `700` become `0700.HK`.
+
+### Weekly blog generation
+
+`GET /blog/context` returns both top-level weekly data and explicit per-market sections:
+- `market_breakdown.US`
+- `market_breakdown.HK`
+
+That allows the OpenClaw blog writer to produce a single weekly review with separate US and HK sections when both markets had meaningful activity.
 
 ---
 

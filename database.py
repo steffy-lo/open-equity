@@ -66,12 +66,13 @@ class BenchmarkSnapshot(SQLModel, table=True):
 
 class ResearchBrief(SQLModel, table=True):
     """
-    One row per weekly research run (Monday morning).
-    Stores the structured output from the Claude research agent.
+    One row per market-specific research run.
+    Stores the structured output from the OpenClaw research agent.
     """
     id:             Optional[int]  = Field(default=None, primary_key=True)
-    week_of:        str            = Field(index=True)          # "YYYY-MM-DD" (Monday)
-    strategy:       str            = ""                          # momentum | mean_reversion | ...
+    market:         str            = Field(default="US", index=True)  # US | HK
+    week_of:        str            = Field(index=True)                  # "YYYY-MM-DD" (Monday)
+    strategy:       str            = ""                                # momentum | mean_reversion | ...
     time_horizon:   str            = ""                          # e.g. "3-5 day swing"
     risk_posture:   str            = "moderate"                  # aggressive | moderate | conservative
     themes:         str            = "[]"                        # JSON list
@@ -146,6 +147,7 @@ def _ensure_pipeline_columns() -> None:
  
     migrations: dict[str, dict[str, str]] = {
         "researchbrief": {
+            "market":         "ALTER TABLE researchbrief ADD COLUMN market VARCHAR DEFAULT 'US'",
             "earnings_watch": "ALTER TABLE researchbrief ADD COLUMN earnings_watch VARCHAR DEFAULT '[]'",
             "raw_json":       "ALTER TABLE researchbrief ADD COLUMN raw_json VARCHAR",
         },

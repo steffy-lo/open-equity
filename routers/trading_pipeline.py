@@ -25,8 +25,8 @@ Blog endpoints:
 import logging
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
-from pydantic import BaseModel
-from typing import Literal, Optional
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from services.research_agent import (
     build_research_context,
@@ -40,12 +40,11 @@ from services.blog_agent import (
     get_blog_post,
 )
 from services.execution_agent import run_entry_pass, run_exit_pass
+from services.markets import Market
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Trading Pipeline"])
-
-Market = Literal["US", "HK"]
 
 # ── In-memory cache for last pass results (lightweight) ───────
 _last_entry_result: dict[str, dict] = {}
@@ -57,7 +56,7 @@ _last_exit_result:  dict[str, dict] = {}
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/research/context", summary="Fetch research context for OpenClaw")
-def get_research_context():
+def get_research_context(market: Market = Query("US")):
     """
     Returns a pre-packaged data bundle: watchlist technicals, recent signals,
     benchmark trend, and the prior week's brief.
@@ -67,21 +66,22 @@ def get_research_context():
       2. Reason about macro, strategy, and which tickers to watch
       3. POST the resulting brief to POST /research
     """
-    return build_research_context()
+    return build_research_context(market=market)
 
 
 class ResearchBriefPayload(BaseModel):
+    market:           Market              = "US"
     week_of:          Optional[str]       = None
     macro_summary:    Optional[str]       = None
     strategy:         Optional[str]       = "mixed"   # momentum|mean_reversion|sector_rotation|defensive|mixed
     time_horizon:     Optional[str]       = None      # e.g. "3-5 day swing"
     risk_posture:     Optional[str]       = "moderate"  # aggressive|moderate|conservative
-    themes:           Optional[list[str]] = []
-    focus_sectors:    Optional[list[str]] = []
-    avoid_sectors:    Optional[list[str]] = []
-    watchlist_add:    Optional[list[str]] = []
-    watchlist_remove: Optional[list[str]] = []
-    earnings_watch:   Optional[list[str]] = []
+    themes:           list[str] = Field(default_factory=list)
+    focus_sectors:    list[str] = Field(default_factory=list)
+    avoid_sectors:    list[str] = Field(default_factory=list)
+    watchlist_add:    list[str] = Field(default_factory=list)
+    watchlist_remove: list[str] = Field(default_factory=list)
+    earnings_watch:   list[str] = Field(default_factory=list)
     key_risks:        Optional[str]       = None
     rationale:        Optional[str]       = None
 
@@ -98,8 +98,8 @@ def post_research_brief(payload: ResearchBriefPayload):
 
 
 @router.get("/research/latest", summary="Get the latest research brief")
-def get_latest_research():
-    brief = get_latest_brief()
+def get_latest_research(market: Market = Query("US")):
+    brief = get_latest_brief(market=market)
     if not brief:
         raise HTTPException(status_code=404, detail="No research briefs found")
     return brief

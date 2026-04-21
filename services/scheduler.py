@@ -3,107 +3,68 @@ scheduler.py
 ============
 Background jobs using APScheduler (in-process, no Redis needed).
 
-Jobs:
-  • Nightly screener   — full watchlist screen at market close (8pm ET Mon–Fri)
-  • Intraday screener  — lightweight re-screen every 15 min during market hours
-  • Benchmark snapshot — daily portfolio vs SPY snapshot at 9pm ET Mon–Fri
+Shared market-session structure:
+  • weekly research context prep
+  • pre-open screen
+  • midday screen refresh
+  • market-specific entry / exit execution
 
-  Autonomous Trading Pipeline (AI-driven)
-  • Monday 7am — prep research context (OpenClaw fetches + reasons + POSTs brief)
-  • Entries — Mon–Fri 9:35am ET — entries
-  • Exits — Mon–Fri 3:45pm ET
-  • Friday 6pm — prep blog context
-
-
-All job output is written to the DB so OpenClaw can query /signals and /portfolio
-for up-to-date context even between user sessions.
+US also keeps benchmark snapshot and weekly blog prep.
+HK retains AM/PM entry and exit windows because the market has a lunch break.
 """
+
 import logging
+from datetime import datetime, timedelta
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from database import engine
-from services.screener import run_screen, load_watchlist
-from services.portfolio_engine import take_benchmark_snapshot
 from config import (
-    SCREEN_SCHEDULE_CRON,
-    SCREEN_INTRADAY_CRON,
     BENCHMARK_SNAPSHOT_CRON,
-    RESEARCH_CONTEXT_CRON,
+    BLOG_CONTEXT_CRON,
     ENTRY_PASS_CRON,
     EXIT_PASS_CRON,
-    BLOG_CONTEXT_CRON,
     HK_ENTRY_PASS_CRON_AM,
-    HK_EXIT_PASS_CRON_AM,
     HK_ENTRY_PASS_CRON_PM,
+    HK_EXIT_PASS_CRON_AM,
     HK_EXIT_PASS_CRON_PM,
+    HK_MIDDAY_SCREEN_CRON,
+    HK_PREOPEN_SCREEN_CRON,
+    HK_RESEARCH_CONTEXT_CRON,
+    RESEARCH_CONTEXT_CRON,
+    US_MIDDAY_SCREEN_CRON,
+    US_PREOPEN_SCREEN_CRON,
 )
+from database import Signal, Position, engine
+from services.markets import Market, filter_market_tickers
+from services.portfolio_engine import take_benchmark_snapshot
+from services.screener import load_watchlist, run_screen
 
 logger = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler = None
+
+US_TIMEZONE = "America/New_York"
+HK_TIMEZONE = "Asia/Hong_Kong"
+
+
+def _build_signal_candidates(session: Session, market: Market) -> list[str]:
+    cutoff = datetime.utcnow() - timedelta(days=5)
+    recent_buys = session.exec(
+        select(Signal.ticker)
+        .where(Signal.signal == "buy")
+        .where(Signal.timestamp >= cutoff)
+        .distinct()
+    ).all()
+    positions = session.exec(select(Position.ticker)).all()
+    watchlist = load_watchlist()
+    candidates = list(set(recent_buys) | set(positions) | set(watchlist[:30]))
+    return filter_market_tickers(candidates, market)
 
 
 # ─────────────────────────────────────────────────────────────
 # Job definitions
 # ─────────────────────────────────────────────────────────────
-
-def _job_nightly_screen():
-    logger.info("[scheduler] 🔍 Running nightly full watchlist screen...")
-    try:
-        with Session(engine) as session:
-            tickers = load_watchlist()
-            if not tickers:
-                logger.warning("[scheduler] Watchlist is empty — skipping screen.")
-                return
-            results = run_screen(tickers=tickers, session=session)
-            buys    = [r for r in results if r["signal"] == "buy"]
-            flags   = [r for r in results if r["signal"] == "flag"]
-            logger.info(
-                f"[scheduler] ✅ Screen complete: {len(tickers)} tickers → "
-                f"{len(buys)} buys, {len(flags)} flags"
-            )
-    except Exception as exc:
-        logger.error(f"[scheduler] Nightly screen failed: {exc}", exc_info=True)
-
-
-def _job_intraday_screen():
-    """
-    Lightweight version — only scans tickers that already have a recent buy
-    signal or are in open positions, to catch intraday breakouts quickly.
-    """
-    logger.info("[scheduler] ⚡ Intraday screen...")
-    try:
-        from database import Signal, Position
-        from sqlmodel import select
-        from datetime import datetime, timedelta
-
-        with Session(engine) as session:
-            # Tickers with recent buy signals (last 5 days)
-            cutoff = datetime.utcnow() - timedelta(days=5)
-            recent_buys = session.exec(
-                select(Signal.ticker)
-                .where(Signal.signal == "buy")
-                .where(Signal.timestamp >= cutoff)
-                .distinct()
-            ).all()
-
-            # Plus any currently held positions
-            positions = session.exec(select(Position.ticker)).all()
-
-            watchlist  = load_watchlist()
-            candidates = list(set(recent_buys) | set(positions) | set(watchlist[:30]))
-
-            if not candidates:
-                return
-
-            results = run_screen(tickers=candidates, session=session)
-            buys    = [r for r in results if r["signal"] == "buy"]
-            logger.info(f"[scheduler] ⚡ Intraday: {len(candidates)} tickers, {len(buys)} buy signals")
-
-    except Exception as exc:
-        logger.error(f"[scheduler] Intraday screen failed: {exc}", exc_info=True)
-
 
 def _job_benchmark_snapshot():
     logger.info("[scheduler] 📸 Taking benchmark snapshot...")
@@ -114,155 +75,195 @@ def _job_benchmark_snapshot():
                 logger.info("[scheduler] Benchmark snapshot already taken today.")
             else:
                 logger.info(
-                    f"[scheduler] ✅ Snapshot: portfolio=${result['portfolio_value']:,.0f} | "
-                    f"return={result['total_return_pct']:.2f}%"
+                    f"[scheduler] ✅ Snapshot: portfolio=${result['portfolio_value']:,.0f} | return={result['total_return_pct']:.2f}%"
                 )
     except Exception as exc:
         logger.error(f"[scheduler] Benchmark snapshot failed: {exc}", exc_info=True)
 
 
-# ─────────────────────────────────────────────────────────────
-# Monday: prep research context (OpenClaw fetches + reasons + POSTs brief)
-# ─────────────────────────────────────────────────────────────
- 
-def _job_research_context():
-    """
-    Snapshot watchlist technicals and log that GET /research/context is ready.
-    OpenClaw should then fetch it, reason about strategy, and POST /research.
-    """
-    logger.info(
-        "[scheduler] 🔬 Research context ready — "
-        "OpenClaw should call GET /research/context then POST /research"
-    )
-    try:
-        from services.research_agent import build_research_context
-        ctx = build_research_context()
-        logger.info(
-            f"[scheduler] ✅ Research context built: "
-            f"{len(ctx.get('watchlist', []))} watchlist tickers, "
-            f"{len(ctx.get('recent_signals', []))} recent signals"
-        )
-    except Exception as exc:
-        logger.error(f"[scheduler] Research context build failed: {exc}", exc_info=True)
 
-# ─────────────────────────────────────────────────────────────
-# Mon–Fri 9:35am: entry pass (fully automatic, no AI)
-# ─────────────────────────────────────────────────────────────
- 
-def _job_entry_pass():
-    logger.info("[scheduler] 📈 Running US entry pass...")
-    try:
-        from services.execution_agent import run_entry_pass
-        result  = run_entry_pass(market="US")
-        placed  = result.get("placed", [])
-        skipped = result.get("skipped", [])
-        logger.info(
-            f"[scheduler] ✅ US entry pass: {len(placed)} orders placed, {len(skipped)} skipped"
-        )
-        for t in placed:
-            logger.info(
-                f"[scheduler]   BUY {t['qty']} × {t['ticker']} "
-                f"@ ${t['price']:.2f} conf={t['confidence']:.2f}"
-            )
-    except Exception as exc:
-        logger.error(f"[scheduler] Entry pass failed: {exc}", exc_info=True)
- 
- 
-# ─────────────────────────────────────────────────────────────
-# Mon–Fri 3:45pm: exit pass (fully automatic, no AI)
-# ─────────────────────────────────────────────────────────────
- 
-def _job_exit_pass():
-    logger.info("[scheduler] 📉 Running US exit pass...")
-    try:
-        from services.execution_agent import run_exit_pass
-        result = run_exit_pass(market="US")
-        exits  = result.get("exits", [])
-        held   = result.get("still_held", [])
-        logger.info(
-            f"[scheduler] ✅ US exit pass: {len(exits)} closed, {len(held)} held"
-        )
-        for e in exits:
-            logger.info(
-                f"[scheduler]   SELL {e['qty']} × {e['ticker']} "
-                f"pnl={e['pnl_pct']:+.1%} ({e['reason']})"
-            )
-    except Exception as exc:
-        logger.error(f"[scheduler] Exit pass failed: {exc}", exc_info=True)
- 
- 
-# ─────────────────────────────────────────────────────────────
-# Friday 6pm: prep blog context (OpenClaw fetches + writes + POSTs post)
-# ─────────────────────────────────────────────────────────────
- 
 def _job_blog_context():
-    """
-    Package up the week's data and log that GET /blog/context is ready.
-    OpenClaw should then fetch it, write the review, and POST /blog.
-    """
-    logger.info(
-        "[scheduler] 📝 Blog context ready — "
-        "OpenClaw should call GET /blog/context then POST /blog"
-    )
+    logger.info("[scheduler] 📝 Blog context ready — OpenClaw should call GET /blog/context then POST /blog")
     try:
         from services.blog_agent import build_blog_context
-        ctx = build_blog_context()
+
+        context = build_blog_context()
         logger.info(
-            f"[scheduler] ✅ Blog context built: "
-            f"{len(ctx.get('trades', []))} trades this week, "
-            f"benchmark alpha={ctx.get('benchmark', {}).get('alpha_pct')}%"
+            f"[scheduler] ✅ Blog context built: {len(context.get('trades', []))} trades this week, benchmark alpha={context.get('benchmark', {}).get('alpha_pct')}%"
         )
     except Exception as exc:
         logger.error(f"[scheduler] Blog context build failed: {exc}", exc_info=True)
 
 
 
+def _job_research_context_us():
+    _run_research_context_job("US")
+
+
+
+def _job_research_context_hk():
+    _run_research_context_job("HK")
+
+
+
+def _job_preopen_screen_us():
+    logger.info("[scheduler] 🇺🇸 Running US pre-open screen...")
+    _run_market_screen(
+        market="US",
+        tickers_factory=lambda _session: filter_market_tickers(load_watchlist(), "US"),
+        screen_label="us-preopen",
+        empty_message="[scheduler] No US tickers in watchlist, skipping US pre-open screen.",
+        success_template="[scheduler] ✅ US pre-open screen: {ticker_count} tickers → {buy_count} buys, {flag_count} flags",
+    )
+
+
+
+def _job_midday_screen_us():
+    logger.info("[scheduler] 🇺🇸 Running US midday screen refresh...")
+    _run_market_screen(
+        market="US",
+        tickers_factory=lambda session: _build_signal_candidates(session, market="US"),
+        screen_label="us-midday-refresh",
+        empty_message="[scheduler] No US candidates for midday screen refresh.",
+        success_template="[scheduler] ✅ US midday screen: {ticker_count} tickers, {buy_count} buy signals",
+    )
+
+
+
+def _job_preopen_screen_hk():
+    logger.info("[scheduler] 🇭🇰 Running HK pre-open screen...")
+    _run_market_screen(
+        market="HK",
+        tickers_factory=lambda _session: filter_market_tickers(load_watchlist(), "HK"),
+        screen_label="hk-preopen",
+        empty_message="[scheduler] No HK tickers in watchlist, skipping HK pre-open screen.",
+        success_template="[scheduler] ✅ HK pre-open screen: {ticker_count} tickers → {buy_count} buys, {flag_count} flags",
+    )
+
+
+
+def _job_midday_screen_hk():
+    logger.info("[scheduler] 🇭🇰 Running HK midday screen refresh...")
+    _run_market_screen(
+        market="HK",
+        tickers_factory=lambda session: _build_signal_candidates(session, market="HK"),
+        screen_label="hk-midday-refresh",
+        empty_message="[scheduler] No HK candidates for midday screen refresh.",
+        success_template="[scheduler] ✅ HK midday screen: {ticker_count} tickers, {buy_count} buy signals",
+    )
+
+
+
+def _job_entry_pass_us():
+    _run_entry_pass_job("US", "US entry pass")
+
+
+
+def _job_exit_pass_us():
+    _run_exit_pass_job("US", "US exit pass")
+
+
+
 def _job_hk_entry_pass_am():
-    logger.info("[scheduler] 🇭🇰 Running HK AM entry pass...")
-    try:
-        from services.execution_agent import run_entry_pass
-        result = run_entry_pass(market="HK")
-        placed = result.get("placed", [])
-        skipped = result.get("skipped", [])
-        logger.info(f"[scheduler] ✅ HK AM entry pass: {len(placed)} orders placed, {len(skipped)} skipped")
-    except Exception as exc:
-        logger.error(f"[scheduler] HK AM entry pass failed: {exc}", exc_info=True)
+    _run_entry_pass_job("HK", "HK AM entry pass")
+
 
 
 def _job_hk_exit_pass_am():
-    logger.info("[scheduler] 🇭🇰 Running HK lunch exit pass...")
-    try:
-        from services.execution_agent import run_exit_pass
-        result = run_exit_pass(market="HK")
-        exits = result.get("exits", [])
-        held = result.get("still_held", [])
-        logger.info(f"[scheduler] ✅ HK lunch exit pass: {len(exits)} closed, {len(held)} held")
-    except Exception as exc:
-        logger.error(f"[scheduler] HK lunch exit pass failed: {exc}", exc_info=True)
+    _run_exit_pass_job("HK", "HK lunch exit pass")
+
 
 
 def _job_hk_entry_pass_pm():
-    logger.info("[scheduler] 🇭🇰 Running HK PM entry pass...")
-    try:
-        from services.execution_agent import run_entry_pass
-        result = run_entry_pass(market="HK")
-        placed = result.get("placed", [])
-        skipped = result.get("skipped", [])
-        logger.info(f"[scheduler] ✅ HK PM entry pass: {len(placed)} orders placed, {len(skipped)} skipped")
-    except Exception as exc:
-        logger.error(f"[scheduler] HK PM entry pass failed: {exc}", exc_info=True)
+    _run_entry_pass_job("HK", "HK PM entry pass")
+
 
 
 def _job_hk_exit_pass_pm():
-    logger.info("[scheduler] 🇭🇰 Running HK close exit pass...")
+    _run_exit_pass_job("HK", "HK close exit pass")
+
+
+
+def _run_research_context_job(market: Market) -> None:
+    logger.info(
+        f"[scheduler] {'🇭🇰' if market == 'HK' else '🇺🇸'} {market} research context ready — "
+        f"OpenClaw should call GET /research/context?market={market} then POST /research"
+    )
+    try:
+        from services.research_agent import build_research_context
+
+        context = build_research_context(market=market)
+        logger.info(
+            f"[scheduler] ✅ {market} research context built: "
+            f"{len(context.get('watchlist', []))} watchlist tickers, "
+            f"{len(context.get('recent_signals', []))} recent signals"
+        )
+    except Exception as exc:
+        logger.error(f"[scheduler] {market} research context build failed: {exc}", exc_info=True)
+
+
+
+def _run_market_screen(
+    *,
+    market: Market,
+    tickers_factory,
+    screen_label: str,
+    empty_message: str,
+    success_template: str,
+) -> None:
+    try:
+        with Session(engine) as session:
+            tickers = tickers_factory(session)
+            if not tickers:
+                logger.info(empty_message)
+                return
+
+            results = run_screen(
+                tickers=tickers,
+                session=session,
+                screen_scope="watchlist",
+                screen_label=screen_label,
+                use_watchlist=True,
+            )
+            buys = [result for result in results if result["signal"] == "buy"]
+            flags = [result for result in results if result["signal"] == "flag"]
+            logger.info(
+                success_template.format(
+                    ticker_count=len(tickers),
+                    buy_count=len(buys),
+                    flag_count=len(flags),
+                )
+            )
+    except Exception as exc:
+        logger.error(f"[scheduler] {market} screen failed: {exc}", exc_info=True)
+
+
+
+def _run_entry_pass_job(market: Market, label: str) -> None:
+    logger.info(f"[scheduler] Running {label}...")
+    try:
+        from services.execution_agent import run_entry_pass
+
+        result = run_entry_pass(market=market)
+        logger.info(
+            f"[scheduler] ✅ {label}: {len(result.get('placed', []))} orders placed, {len(result.get('skipped', []))} skipped"
+        )
+    except Exception as exc:
+        logger.error(f"[scheduler] {label} failed: {exc}", exc_info=True)
+
+
+
+def _run_exit_pass_job(market: Market, label: str) -> None:
+    logger.info(f"[scheduler] Running {label}...")
     try:
         from services.execution_agent import run_exit_pass
-        result = run_exit_pass(market="HK")
-        exits = result.get("exits", [])
-        held = result.get("still_held", [])
-        logger.info(f"[scheduler] ✅ HK close exit pass: {len(exits)} closed, {len(held)} held")
+
+        result = run_exit_pass(market=market)
+        logger.info(
+            f"[scheduler] ✅ {label}: {len(result.get('exits', []))} closed, {len(result.get('still_held', []))} held"
+        )
     except Exception as exc:
-        logger.error(f"[scheduler] HK close exit pass failed: {exc}", exc_info=True)
+        logger.error(f"[scheduler] {label} failed: {exc}", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -270,7 +271,6 @@ def _job_hk_exit_pass_pm():
 # ─────────────────────────────────────────────────────────────
 
 def _parse_cron_for_timezone(cron_str: str, timezone: str) -> CronTrigger:
-    """Parse '0 20 * * 1-5' style cron into APScheduler trigger."""
     parts = cron_str.strip().split()
     if len(parts) != 5:
         raise ValueError(f"Expected 5-field cron expression, got: {cron_str!r}")
@@ -285,124 +285,51 @@ def _parse_cron_for_timezone(cron_str: str, timezone: str) -> CronTrigger:
     )
 
 
+
 def _parse_cron(cron_str: str) -> CronTrigger:
-    return _parse_cron_for_timezone(cron_str, "America/New_York")
+    return _parse_cron_for_timezone(cron_str, US_TIMEZONE)
+
 
 
 def _parse_cron_hk(cron_str: str) -> CronTrigger:
-    return _parse_cron_for_timezone(cron_str, "Asia/Hong_Kong")
+    return _parse_cron_for_timezone(cron_str, HK_TIMEZONE)
+
 
 
 def start_scheduler():
     global _scheduler
-    _scheduler = BackgroundScheduler(timezone="America/New_York")
+    _scheduler = BackgroundScheduler(timezone=US_TIMEZONE)
 
-    _scheduler.add_job(
-        _job_nightly_screen,
-        trigger=_parse_cron(SCREEN_SCHEDULE_CRON),
-        id="nightly_screen",
-        name="Nightly full watchlist screen",
-        replace_existing=True,
-        misfire_grace_time=300,
-    )
+    jobs = [
+        (_job_benchmark_snapshot, _parse_cron(BENCHMARK_SNAPSHOT_CRON), "benchmark_snapshot", "Daily benchmark snapshot", 300),
+        (_job_research_context_us, _parse_cron(RESEARCH_CONTEXT_CRON), "research_context_us", "US weekly research context prep", 600),
+        (_job_preopen_screen_us, _parse_cron(US_PREOPEN_SCREEN_CRON), "preopen_screen_us", "US pre-open screen", 300),
+        (_job_midday_screen_us, _parse_cron(US_MIDDAY_SCREEN_CRON), "midday_screen_us", "US midday screen refresh", 300),
+        (_job_entry_pass_us, _parse_cron(ENTRY_PASS_CRON), "entry_pass_us", "US entry pass", 120),
+        (_job_exit_pass_us, _parse_cron(EXIT_PASS_CRON), "exit_pass_us", "US exit pass", 120),
+        (_job_blog_context, _parse_cron(BLOG_CONTEXT_CRON), "blog_context", "Sunday blog context prep", 1800),
+        (_job_research_context_hk, _parse_cron_hk(HK_RESEARCH_CONTEXT_CRON), "research_context_hk", "HK weekly research context prep", 600),
+        (_job_preopen_screen_hk, _parse_cron_hk(HK_PREOPEN_SCREEN_CRON), "preopen_screen_hk", "HK pre-open screen", 300),
+        (_job_midday_screen_hk, _parse_cron_hk(HK_MIDDAY_SCREEN_CRON), "midday_screen_hk", "HK midday screen refresh", 300),
+        (_job_hk_entry_pass_am, _parse_cron_hk(HK_ENTRY_PASS_CRON_AM), "entry_pass_hk_am", "HK AM entry pass", 120),
+        (_job_hk_exit_pass_am, _parse_cron_hk(HK_EXIT_PASS_CRON_AM), "exit_pass_hk_am", "HK AM exit pass", 120),
+        (_job_hk_entry_pass_pm, _parse_cron_hk(HK_ENTRY_PASS_CRON_PM), "entry_pass_hk_pm", "HK PM entry pass", 120),
+        (_job_hk_exit_pass_pm, _parse_cron_hk(HK_EXIT_PASS_CRON_PM), "exit_pass_hk_pm", "HK PM exit pass", 120),
+    ]
 
-    _scheduler.add_job(
-        _job_intraday_screen,
-        trigger=_parse_cron(SCREEN_INTRADAY_CRON),
-        id="intraday_screen",
-        name="Intraday signal refresh",
-        replace_existing=True,
-        misfire_grace_time=60,
-    )
-
-    _scheduler.add_job(
-        _job_benchmark_snapshot,
-        trigger=_parse_cron(BENCHMARK_SNAPSHOT_CRON),
-        id="benchmark_snapshot",
-        name="Daily benchmark snapshot",
-        replace_existing=True,
-        misfire_grace_time=300,
-    )
- 
-    _scheduler.add_job(
-        _job_research_context,
-        trigger=_parse_cron(RESEARCH_CONTEXT_CRON),
-        id="research_context",
-        name="Monday research context prep",
-        replace_existing=True,
-        misfire_grace_time=600,
-    )
-    
-    _scheduler.add_job(
-        _job_entry_pass,
-        trigger=_parse_cron(ENTRY_PASS_CRON),
-        id="entry_pass",
-        name="Daily entry pass — signal → order",
-        replace_existing=True,
-        misfire_grace_time=120,
-    )
-    
-    _scheduler.add_job(
-        _job_exit_pass,
-        trigger=_parse_cron(EXIT_PASS_CRON),
-        id="exit_pass",
-        name="Daily exit pass — stop-loss / take-profit",
-        replace_existing=True,
-        misfire_grace_time=120,
-    )
-    
-    _scheduler.add_job(
-        _job_blog_context,
-        trigger=_parse_cron(BLOG_CONTEXT_CRON),
-        id="blog_context",
-        name="Sunday blog context prep",
-        replace_existing=True,
-        misfire_grace_time=1800,
-    )
-
-    # ── Hong Kong Market Jobs ─────────────────────────────────────
-    _scheduler.add_job(
-        _job_hk_entry_pass_am,
-        trigger=_parse_cron_hk(HK_ENTRY_PASS_CRON_AM),
-        id="hk_entry_pass_am",
-        name="HK Daily entry pass (AM) — signal → order",
-        replace_existing=True,
-        misfire_grace_time=120,
-    )
-
-    _scheduler.add_job(
-        _job_hk_exit_pass_am,
-        trigger=_parse_cron_hk(HK_EXIT_PASS_CRON_AM),
-        id="hk_exit_pass_am",
-        name="HK Daily exit pass (AM) — stop-loss / take-profit",
-        replace_existing=True,
-        misfire_grace_time=120,
-    )
-
-    _scheduler.add_job(
-        _job_hk_entry_pass_pm,
-        trigger=_parse_cron_hk(HK_ENTRY_PASS_CRON_PM),
-        id="hk_entry_pass_pm",
-        name="HK Daily entry pass (PM) — signal → order",
-        replace_existing=True,
-        misfire_grace_time=120,
-    )
-
-    _scheduler.add_job(
-        _job_hk_exit_pass_pm,
-        trigger=_parse_cron_hk(HK_EXIT_PASS_CRON_PM),
-        id="hk_exit_pass_pm",
-        name="HK Daily exit pass (PM) — stop-loss / take-profit",
-        replace_existing=True,
-        misfire_grace_time=120,
-    )
+    for func, trigger, job_id, name, grace in jobs:
+        _scheduler.add_job(
+            func,
+            trigger=trigger,
+            id=job_id,
+            name=name,
+            replace_existing=True,
+            misfire_grace_time=grace,
+        )
 
     _scheduler.start()
-    logger.info(
-        "[scheduler] 🚀 APScheduler started with 11 jobs: "
-        "nightly_screen | intraday_screen | benchmark_snapshot | research context | entry pass | exit pass | blog context | "
-        "hk entry pass AM | hk exit pass AM | hk entry pass PM | hk exit pass PM"
-    )
+    logger.info("[scheduler] 🚀 APScheduler started with harmonized US and HK session pipelines")
+
 
 
 def stop_scheduler():
@@ -412,14 +339,14 @@ def stop_scheduler():
         logger.info("[scheduler] APScheduler stopped.")
 
 
+
 def get_scheduler_status() -> dict:
     if not _scheduler:
         return {"running": False}
-    jobs = []
-    for job in _scheduler.get_jobs():
-        jobs.append({
-            "id":       job.id,
-            "name":     job.name,
-            "next_run": str(job.next_run_time),
-        })
-    return {"running": _scheduler.running, "jobs": jobs}
+    return {
+        "running": _scheduler.running,
+        "jobs": [
+            {"id": job.id, "name": job.name, "next_run": str(job.next_run_time)}
+            for job in _scheduler.get_jobs()
+        ],
+    }
