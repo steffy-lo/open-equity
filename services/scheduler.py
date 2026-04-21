@@ -3,20 +3,14 @@ scheduler.py
 ============
 Background jobs using APScheduler (in-process, no Redis needed).
 
-US jobs:
-  • Nightly screener
-  • Intraday screener
-  • Benchmark snapshot
-  • Monday research context prep
-  • Entry / exit execution
-  • Friday blog context prep
+Shared market-session structure:
+  • weekly research context prep
+  • pre-open screen
+  • midday screen refresh
+  • market-specific entry / exit execution
 
-HK parity jobs:
-  • Monday HK research context prep
-  • HK pre-open screen
-  • HK midday screen refresh
-  • HK AM / PM entry execution
-  • HK lunch / close exit execution
+US also keeps the broader nightly screen, benchmark snapshot, and weekly blog prep.
+HK retains AM/PM entry and exit windows because the market has a lunch break.
 """
 
 import logging
@@ -39,8 +33,9 @@ from config import (
     HK_PREOPEN_SCREEN_CRON,
     HK_RESEARCH_CONTEXT_CRON,
     RESEARCH_CONTEXT_CRON,
-    SCREEN_INTRADAY_CRON,
     SCREEN_SCHEDULE_CRON,
+    US_MIDDAY_SCREEN_CRON,
+    US_PREOPEN_SCREEN_CRON,
 )
 from database import Signal, Position, engine
 from services.markets import Market, filter_market_tickers
@@ -50,12 +45,11 @@ from services.screener import load_watchlist, run_screen
 logger = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler = None
 
-
 US_TIMEZONE = "America/New_York"
 HK_TIMEZONE = "Asia/Hong_Kong"
 
 
-def _build_intraday_candidates(session: Session, market: Market) -> list[str]:
+def _build_signal_candidates(session: Session, market: Market) -> list[str]:
     cutoff = datetime.utcnow() - timedelta(days=5)
     recent_buys = session.exec(
         select(Signal.ticker)
@@ -85,23 +79,10 @@ def _job_nightly_screen():
             buys = [result for result in results if result["signal"] == "buy"]
             flags = [result for result in results if result["signal"] == "flag"]
             logger.info(
-                f"[scheduler] ✅ Screen complete: {len(tickers)} tickers → {len(buys)} buys, {len(flags)} flags"
+                f"[scheduler] ✅ Nightly screen complete: {len(tickers)} tickers → {len(buys)} buys, {len(flags)} flags"
             )
     except Exception as exc:
         logger.error(f"[scheduler] Nightly screen failed: {exc}", exc_info=True)
-
-
-
-def _job_intraday_screen():
-    logger.info("[scheduler] ⚡ Intraday screen...")
-    _run_market_screen(
-        market="US",
-        tickers_factory=lambda session: _build_intraday_candidates(session, market="US"),
-        screen_label=None,
-        empty_message=None,
-        success_template="[scheduler] ✅ US intraday screen: {ticker_count} tickers, {buy_count} buy signals",
-        include_flags=False,
-    )
 
 
 
@@ -121,21 +102,6 @@ def _job_benchmark_snapshot():
 
 
 
-def _job_research_context():
-    _run_research_context_job("US")
-
-
-
-def _job_entry_pass():
-    _run_entry_pass_job("US", "US entry pass")
-
-
-
-def _job_exit_pass():
-    _run_exit_pass_job("US", "US exit pass")
-
-
-
 def _job_blog_context():
     logger.info("[scheduler] 📝 Blog context ready — OpenClaw should call GET /blog/context then POST /blog")
     try:
@@ -150,12 +116,41 @@ def _job_blog_context():
 
 
 
-def _job_hk_research_context():
+def _job_research_context_us():
+    _run_research_context_job("US")
+
+
+
+def _job_research_context_hk():
     _run_research_context_job("HK")
 
 
 
-def _job_hk_preopen_screen():
+def _job_preopen_screen_us():
+    logger.info("[scheduler] 🇺🇸 Running US pre-open screen...")
+    _run_market_screen(
+        market="US",
+        tickers_factory=lambda _session: filter_market_tickers(load_watchlist(), "US"),
+        screen_label="us-preopen",
+        empty_message="[scheduler] No US tickers in watchlist, skipping US pre-open screen.",
+        success_template="[scheduler] ✅ US pre-open screen: {ticker_count} tickers → {buy_count} buys, {flag_count} flags",
+    )
+
+
+
+def _job_midday_screen_us():
+    logger.info("[scheduler] 🇺🇸 Running US midday screen refresh...")
+    _run_market_screen(
+        market="US",
+        tickers_factory=lambda session: _build_signal_candidates(session, market="US"),
+        screen_label="us-midday-refresh",
+        empty_message="[scheduler] No US candidates for midday screen refresh.",
+        success_template="[scheduler] ✅ US midday screen: {ticker_count} tickers, {buy_count} buy signals",
+    )
+
+
+
+def _job_preopen_screen_hk():
     logger.info("[scheduler] 🇭🇰 Running HK pre-open screen...")
     _run_market_screen(
         market="HK",
@@ -167,16 +162,25 @@ def _job_hk_preopen_screen():
 
 
 
-def _job_hk_midday_screen():
+def _job_midday_screen_hk():
     logger.info("[scheduler] 🇭🇰 Running HK midday screen refresh...")
     _run_market_screen(
         market="HK",
-        tickers_factory=lambda session: _build_intraday_candidates(session, market="HK"),
+        tickers_factory=lambda session: _build_signal_candidates(session, market="HK"),
         screen_label="hk-midday-refresh",
         empty_message="[scheduler] No HK candidates for midday screen refresh.",
         success_template="[scheduler] ✅ HK midday screen: {ticker_count} tickers, {buy_count} buy signals",
-        include_flags=False,
     )
+
+
+
+def _job_entry_pass_us():
+    _run_entry_pass_job("US", "US entry pass")
+
+
+
+def _job_exit_pass_us():
+    _run_exit_pass_job("US", "US exit pass")
 
 
 
@@ -202,7 +206,7 @@ def _job_hk_exit_pass_pm():
 
 def _run_research_context_job(market: Market) -> None:
     logger.info(
-        f"[scheduler] {'🇭🇰 ' if market == 'HK' else ''}{market} research context ready — "
+        f"[scheduler] {'🇭🇰' if market == 'HK' else '🇺🇸'} {market} research context ready — "
         f"OpenClaw should call GET /research/context?market={market} then POST /research"
     )
     try:
@@ -223,17 +227,15 @@ def _run_market_screen(
     *,
     market: Market,
     tickers_factory,
-    screen_label: str | None,
-    empty_message: str | None,
+    screen_label: str,
+    empty_message: str,
     success_template: str,
-    include_flags: bool = True,
 ) -> None:
     try:
         with Session(engine) as session:
             tickers = tickers_factory(session)
             if not tickers:
-                if empty_message:
-                    logger.info(empty_message)
+                logger.info(empty_message)
                 return
 
             results = run_screen(
@@ -241,7 +243,7 @@ def _run_market_screen(
                 session=session,
                 screen_scope="watchlist",
                 screen_label=screen_label,
-                use_watchlist=screen_label == "hk-preopen",
+                use_watchlist=True,
             )
             buys = [result for result in results if result["signal"] == "buy"]
             flags = [result for result in results if result["signal"] == "flag"]
@@ -258,7 +260,7 @@ def _run_market_screen(
 
 
 def _run_entry_pass_job(market: Market, label: str) -> None:
-    logger.info(f"[scheduler] {'🇭🇰 ' if market == 'HK' else ''}Running {label}...")
+    logger.info(f"[scheduler] Running {label}...")
     try:
         from services.execution_agent import run_entry_pass
 
@@ -272,7 +274,7 @@ def _run_entry_pass_job(market: Market, label: str) -> None:
 
 
 def _run_exit_pass_job(market: Market, label: str) -> None:
-    logger.info(f"[scheduler] {'🇭🇰 ' if market == 'HK' else ''}Running {label}...")
+    logger.info(f"[scheduler] Running {label}...")
     try:
         from services.execution_agent import run_exit_pass
 
@@ -320,19 +322,20 @@ def start_scheduler():
 
     jobs = [
         (_job_nightly_screen, _parse_cron(SCREEN_SCHEDULE_CRON), "nightly_screen", "Nightly full watchlist screen", 300),
-        (_job_intraday_screen, _parse_cron(SCREEN_INTRADAY_CRON), "intraday_screen", "Intraday signal refresh", 60),
         (_job_benchmark_snapshot, _parse_cron(BENCHMARK_SNAPSHOT_CRON), "benchmark_snapshot", "Daily benchmark snapshot", 300),
-        (_job_research_context, _parse_cron(RESEARCH_CONTEXT_CRON), "research_context", "Monday research context prep", 600),
-        (_job_entry_pass, _parse_cron(ENTRY_PASS_CRON), "entry_pass", "Daily entry pass, US", 120),
-        (_job_exit_pass, _parse_cron(EXIT_PASS_CRON), "exit_pass", "Daily exit pass, US", 120),
+        (_job_research_context_us, _parse_cron(RESEARCH_CONTEXT_CRON), "research_context_us", "US weekly research context prep", 600),
+        (_job_preopen_screen_us, _parse_cron(US_PREOPEN_SCREEN_CRON), "preopen_screen_us", "US pre-open screen", 300),
+        (_job_midday_screen_us, _parse_cron(US_MIDDAY_SCREEN_CRON), "midday_screen_us", "US midday screen refresh", 300),
+        (_job_entry_pass_us, _parse_cron(ENTRY_PASS_CRON), "entry_pass_us", "US entry pass", 120),
+        (_job_exit_pass_us, _parse_cron(EXIT_PASS_CRON), "exit_pass_us", "US exit pass", 120),
         (_job_blog_context, _parse_cron(BLOG_CONTEXT_CRON), "blog_context", "Sunday blog context prep", 1800),
-        (_job_hk_research_context, _parse_cron_hk(HK_RESEARCH_CONTEXT_CRON), "hk_research_context", "HK Monday research context prep", 600),
-        (_job_hk_preopen_screen, _parse_cron_hk(HK_PREOPEN_SCREEN_CRON), "hk_preopen_screen", "HK pre-open screen", 300),
-        (_job_hk_midday_screen, _parse_cron_hk(HK_MIDDAY_SCREEN_CRON), "hk_midday_screen", "HK midday screen refresh", 300),
-        (_job_hk_entry_pass_am, _parse_cron_hk(HK_ENTRY_PASS_CRON_AM), "hk_entry_pass_am", "HK daily entry pass (AM)", 120),
-        (_job_hk_exit_pass_am, _parse_cron_hk(HK_EXIT_PASS_CRON_AM), "hk_exit_pass_am", "HK daily exit pass (AM)", 120),
-        (_job_hk_entry_pass_pm, _parse_cron_hk(HK_ENTRY_PASS_CRON_PM), "hk_entry_pass_pm", "HK daily entry pass (PM)", 120),
-        (_job_hk_exit_pass_pm, _parse_cron_hk(HK_EXIT_PASS_CRON_PM), "hk_exit_pass_pm", "HK daily exit pass (PM)", 120),
+        (_job_research_context_hk, _parse_cron_hk(HK_RESEARCH_CONTEXT_CRON), "research_context_hk", "HK weekly research context prep", 600),
+        (_job_preopen_screen_hk, _parse_cron_hk(HK_PREOPEN_SCREEN_CRON), "preopen_screen_hk", "HK pre-open screen", 300),
+        (_job_midday_screen_hk, _parse_cron_hk(HK_MIDDAY_SCREEN_CRON), "midday_screen_hk", "HK midday screen refresh", 300),
+        (_job_hk_entry_pass_am, _parse_cron_hk(HK_ENTRY_PASS_CRON_AM), "entry_pass_hk_am", "HK AM entry pass", 120),
+        (_job_hk_exit_pass_am, _parse_cron_hk(HK_EXIT_PASS_CRON_AM), "exit_pass_hk_am", "HK AM exit pass", 120),
+        (_job_hk_entry_pass_pm, _parse_cron_hk(HK_ENTRY_PASS_CRON_PM), "entry_pass_hk_pm", "HK PM entry pass", 120),
+        (_job_hk_exit_pass_pm, _parse_cron_hk(HK_EXIT_PASS_CRON_PM), "exit_pass_hk_pm", "HK PM exit pass", 120),
     ]
 
     for func, trigger, job_id, name, grace in jobs:
@@ -346,12 +349,7 @@ def start_scheduler():
         )
 
     _scheduler.start()
-    logger.info(
-        "[scheduler] 🚀 APScheduler started with US and HK parity jobs: "
-        "nightly_screen | intraday_screen | benchmark_snapshot | research_context | entry_pass | exit_pass | "
-        "blog_context | hk_research_context | hk_preopen_screen | hk_midday_screen | hk_entry_pass_am | "
-        "hk_exit_pass_am | hk_entry_pass_pm | hk_exit_pass_pm"
-    )
+    logger.info("[scheduler] 🚀 APScheduler started with harmonized US and HK session pipelines")
 
 
 
