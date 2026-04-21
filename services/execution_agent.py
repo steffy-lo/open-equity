@@ -32,13 +32,93 @@ from config import (
     EXEC_TAKE_PROFIT_PCT,
     EXEC_MAX_TRADES_PER_DAY,
     MIN_SIGNAL_CONFIDENCE,
+    TRADE_UPDATE_ACCOUNT_ID,
+    TRADE_UPDATE_CHANNEL,
+    TRADE_UPDATE_TOPIC,
 )
 from database import Signal, Trade, Position, session_scope
 from services.market_data import get_price_data
+from services.markets import Market, infer_market, market_currency_prefix
+from services.openclaw_notify import send_openclaw_message
 from services.portfolio_engine import execute_order, get_portfolio_state
 from services.research_agent import get_latest_brief
 
 logger = logging.getLogger(__name__)
+
+def _send_trade_update(message: str) -> dict:
+    # Delivery is optional so the example config can stay generic.
+    if not TRADE_UPDATE_TOPIC:
+        return {"ok": False, "skipped": True, "reason": "trade_updates_disabled"}
+
+    result = send_openclaw_message(
+        account_id=TRADE_UPDATE_ACCOUNT_ID,
+        channel=TRADE_UPDATE_CHANNEL,
+        target=TRADE_UPDATE_TOPIC,
+        message=message,
+        wait=False,
+    )
+    if result.get("ok"):
+        return {"ok": True, "target": TRADE_UPDATE_TOPIC}
+
+    logger.warning(f"[exec_agent] Trade update delivery failed: {result.get('error')}")
+    return {"ok": False, "target": TRADE_UPDATE_TOPIC, "error": result.get("error")}
+
+
+def _format_trade_update(*, side: str, ticker: str, qty: int | float, fill_price: float, note: str, portfolio: dict, position: Optional[dict] = None, market: Market = "US", currency: str | None = None) -> str:
+    side_label = "BUY" if side == "buy" else "SELL"
+    icon = "🟢" if side == "buy" else "🔴"
+
+    money_prefix = market_currency_prefix(market, currency)
+
+    lines = [
+        f"{icon} Trade update",
+        "",
+        f"• Market: {market}",
+        f"• Ticker: {ticker}",
+        f"• Side: {side_label}",
+        f"• Size: {qty}",
+        f"• Execution price: {money_prefix}{fill_price:.2f}",
+    ]
+
+    clean_note = (note or "").strip()
+    if clean_note:
+        lines.append(f"• Reason: {clean_note[:220]}")
+
+    cash = portfolio.get("cash")
+    total_value = portfolio.get("total_value")
+    if cash is not None:
+        context = f"• Cash remaining: ${cash:,.2f}"
+        if total_value is not None and total_value > 0:
+            context += f" | Portfolio: ${total_value:,.2f}"
+        lines.append(context)
+
+    if position:
+        lines.append(
+            f"• Position: {position.get('ticker')} {position.get('qty')} shares @ avg {money_prefix}{position.get('avg_cost', 0):.2f}"
+        )
+    elif side == "sell":
+        lines.append(f"• Position: {ticker} closed or reduced")
+
+    return "\n".join(lines)
+
+
+def _notify_trade(*, side: str, ticker: str, qty: int | float, fill_price: float, note: str, session) -> dict:
+    portfolio = get_portfolio_state(session)
+    position = next((p for p in portfolio.get("positions", []) if p.get("ticker") == ticker), None)
+    price_data = get_price_data(ticker)
+    market = infer_market(ticker)
+    message = _format_trade_update(
+        side=side,
+        ticker=ticker,
+        qty=qty,
+        fill_price=fill_price,
+        note=note,
+        portfolio=portfolio,
+        position=position,
+        market=market,
+        currency=price_data.get("currency"),
+    )
+    return _send_trade_update(message)
 
 
 def _dedupe_signals_by_ticker(signals: list[Signal]) -> list[Signal]:
@@ -61,9 +141,9 @@ def _dedupe_signals_by_ticker(signals: list[Signal]) -> list[Signal]:
 # Entry pass
 # ─────────────────────────────────────────────────────────────
 
-def run_entry_pass() -> dict:
+def run_entry_pass(market: Market = "US") -> dict:
     """
-    Read unacted buy signals, apply risk rules, and place orders.
+    Read unacted buy signals for a market, apply risk rules, and place orders.
     Returns a summary dict with trades placed and any skips.
     """
     placed  = []
@@ -100,7 +180,7 @@ def run_entry_pass() -> dict:
         remaining_slots = EXEC_MAX_TRADES_PER_DAY - len(trades_today)
 
         # ── Research brief for context ─────────────────────────
-        brief           = get_latest_brief() or {}
+        brief           = get_latest_brief(market=market) or {}
         earnings_blackout = set(brief.get("earnings_watch", []))
         avoid_sectors     = set(brief.get("avoid_sectors", []))
         risk_posture      = brief.get("risk_posture", "moderate")
@@ -120,6 +200,8 @@ def run_entry_pass() -> dict:
         held_tickers = {p.ticker for p in session.exec(select(Position)).all() if p.qty > 0}
 
         for sig in signals:
+            if infer_market(sig.ticker) != market:
+                continue
             if len(placed) >= remaining_slots:
                 break
 
@@ -154,7 +236,7 @@ def run_entry_pass() -> dict:
                 continue
 
             note = (
-                f"Auto-entry | conf={sig.confidence:.2f} | {sig.reason[:120]} | "
+                f"Auto-entry {market} | conf={sig.confidence:.2f} | {sig.reason[:120]} | "
                 f"strategy={brief.get('strategy', 'n/a')} | "
                 f"horizon={brief.get('time_horizon', 'n/a')}"
             )
@@ -173,16 +255,25 @@ def run_entry_pass() -> dict:
 
                 held_tickers.add(sig.ticker)
                 cash -= qty * current_price
+                notification = _notify_trade(
+                    side="buy",
+                    ticker=sig.ticker,
+                    qty=qty,
+                    fill_price=result.get("fill_price", current_price),
+                    note=note,
+                    session=session,
+                )
 
                 placed.append({
                     "ticker":     sig.ticker,
                     "qty":        qty,
-                    "price":      current_price,
+                    "price":      result.get("fill_price", current_price),
                     "confidence": sig.confidence,
                     "order_id":   result.get("order_id"),
+                    "notification": notification,
                 })
                 logger.info(
-                    f"[exec_agent] ✅ BUY {qty} × {sig.ticker} @ ${current_price:.2f} "
+                    f"[exec_agent] ✅ BUY {qty} × {sig.ticker} @ ${result.get('fill_price', current_price):.2f} "
                     f"conf={sig.confidence:.2f}"
                 )
             except Exception as exc:
@@ -191,6 +282,7 @@ def run_entry_pass() -> dict:
 
     return {
         "pass":      "entry",
+        "market":    market,
         "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
         "placed":    placed,
         "skipped":   skipped,
@@ -201,9 +293,9 @@ def run_entry_pass() -> dict:
 # Exit pass
 # ─────────────────────────────────────────────────────────────
 
-def run_exit_pass() -> dict:
+def run_exit_pass(market: Market = "US") -> dict:
     """
-    Review all open positions. Sell anything that has breached
+    Review open positions for a market. Sell anything that has breached
     stop-loss or take-profit thresholds.
     """
     exits = []
@@ -213,6 +305,8 @@ def run_exit_pass() -> dict:
         positions = session.exec(select(Position).where(Position.qty > 0)).all()
 
         for pos in positions:
+            if infer_market(pos.ticker) != market:
+                continue
             try:
                 price_data    = get_price_data(pos.ticker)
                 current_price = price_data.get("price")
@@ -224,7 +318,7 @@ def run_exit_pass() -> dict:
 
                 if should_exit:
                     note = (
-                        f"Auto-exit | {exit_reason} | "
+                        f"Auto-exit {market} | {exit_reason} | "
                         f"avg_cost=${pos.avg_cost:.2f} "
                         f"current=${current_price:.2f} "
                         f"pnl={pnl_pct:+.1%}"
@@ -237,18 +331,27 @@ def run_exit_pass() -> dict:
                         skill_used="execution_agent:exit",
                         session=session,
                     )
+                    notification = _notify_trade(
+                        side="sell",
+                        ticker=pos.ticker,
+                        qty=pos.qty,
+                        fill_price=result.get("fill_price", current_price),
+                        note=note,
+                        session=session,
+                    )
                     exits.append({
                         "ticker":     pos.ticker,
                         "qty":        pos.qty,
                         "avg_cost":   pos.avg_cost,
-                        "exit_price": current_price,
+                        "exit_price": result.get("fill_price", current_price),
                         "pnl_pct":    round(pnl_pct, 4),
                         "reason":     exit_reason,
                         "order_id":   result.get("order_id"),
+                        "notification": notification,
                     })
                     logger.info(
                         f"[exec_agent] 🔴 SELL {pos.qty} × {pos.ticker} "
-                        f"@ ${current_price:.2f} ({pnl_pct:+.1%}) — {exit_reason}"
+                        f"@ ${result.get('fill_price', current_price):.2f} ({pnl_pct:+.1%}) — {exit_reason}"
                     )
                 else:
                     held.append({"ticker": pos.ticker, "qty": pos.qty, "pnl_pct": round(pnl_pct, 4)})
@@ -258,6 +361,7 @@ def run_exit_pass() -> dict:
 
     return {
         "pass":       "exit",
+        "market":     market,
         "timestamp":  datetime.now(timezone.utc).isoformat() + "Z",
         "exits":      exits,
         "still_held": held,

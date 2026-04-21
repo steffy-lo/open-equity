@@ -49,10 +49,15 @@ if [ ! -f ".env" ]; then
   warn "Review .env before going live (STARTING_CASH, TRADING_FEE_PCT, etc.)"
 fi
 
-# ── Watchlist ─────────────────────────────────────────────────
-if [ ! -f "watchlist.json" ]; then
-  warn "watchlist.json missing — creating empty watchlist"
-  echo '{"tickers": [], "updated_at": ""}' > watchlist.json
+# ── Watchlists ────────────────────────────────────────────────
+if [ ! -f "watchlist.us.json" ]; then
+  warn "watchlist.us.json missing — creating empty US watchlist"
+  echo '{"tickers": [], "market": "US", "updated_at": ""}' > watchlist.us.json
+fi
+
+if [ ! -f "watchlist.hk.json" ]; then
+  warn "watchlist.hk.json missing — creating empty HK watchlist"
+  echo '{"tickers": [], "market": "HK", "updated_at": ""}' > watchlist.hk.json
 fi
 
 log "─────────────────────────────────────────────────────"

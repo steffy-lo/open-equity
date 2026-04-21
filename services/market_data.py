@@ -9,6 +9,7 @@ Wraps yfinance with:
 """
 import time
 import logging
+import math
 from typing import Optional
 import yfinance as yf
 from config import PRICE_CACHE_TTL
@@ -18,6 +19,56 @@ logger = logging.getLogger(__name__)
 # Simple TTL cache: { TICKER: { "data": {...}, "ts": float } }
 _price_cache: dict[str, dict] = {}
 _tech_cache:  dict[str, dict] = {}
+
+
+def _safe_float(value) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        result = float(value)
+        if math.isnan(result) or math.isinf(result):
+            return None
+        return result
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_dividend_yield(info: dict, current_price: float) -> Optional[float]:
+    """
+    Return dividend yield as a decimal fraction, e.g. 0.038 for 3.8%.
+
+    Yahoo fields are inconsistent across markets. In practice `dividendYield`
+    often comes back in percentage points (0.38 meaning 0.38%) while some
+    related fields are decimal fractions. We reconcile against more stable
+    references when available.
+    """
+    raw = _safe_float(info.get("dividendYield"))
+    trailing = _safe_float(info.get("trailingAnnualDividendYield"))
+    annual_rate = _safe_float(info.get("trailingAnnualDividendRate"))
+    derived = (annual_rate / current_price) if annual_rate is not None and current_price > 0 else None
+
+    references = [candidate for candidate in (trailing, derived) if candidate is not None and 0 <= candidate <= 1]
+    if raw is None:
+        return references[0] if references else None
+
+    raw_candidates = []
+    if 0 <= raw <= 1:
+        raw_candidates.extend([raw, raw / 100])
+    elif 1 < raw <= 100:
+        raw_candidates.append(raw / 100)
+    elif raw > 100:
+        return None
+
+    if references and raw_candidates:
+        return min(raw_candidates, key=lambda candidate: min(abs(candidate - ref) for ref in references))
+
+    if raw_candidates:
+        # Without references, treat sub-1 values above 0.2 as percentage points.
+        if 0 < raw <= 1 and raw > 0.2:
+            return raw / 100
+        return raw_candidates[0]
+
+    return references[0] if references else None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -68,6 +119,8 @@ def get_price_data(ticker: str) -> dict:
         prev_close    = float(close.iloc[-2]) if len(close) > 1 else current_price
         change_pct    = ((current_price - prev_close) / prev_close) * 100
 
+        dividend_yield = _normalize_dividend_yield(info, current_price)
+
         data = {
             # Price
             "ticker":        t,
@@ -87,7 +140,7 @@ def get_price_data(ticker: str) -> dict:
             "ev_ebitda":     info.get("enterpriseToEbitda"),
             "ev_revenue":    info.get("enterpriseToRevenue"),
             # Dividends
-            "div_yield":     info.get("dividendYield"),
+            "div_yield":     dividend_yield,
             "payout_ratio":  info.get("payoutRatio"),
             "ex_div_date":   str(info.get("exDividendDate", "")),
             # Health

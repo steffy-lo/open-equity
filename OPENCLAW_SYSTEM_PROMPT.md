@@ -31,13 +31,16 @@ Base URL: `http://localhost:5000`
 | `GET` | `/signals` | Latest screener output |
 | `GET` | `/watchlist` | View watchlist |
 | `PUT` | `/watchlist` | Manage watchlist |
+| `GET` | `/research/context?market=US|HK` | Fetch structured research context |
+| `POST` | `/research` | Submit structured research brief |
+| `GET` | `/research/latest?market=US|HK` | Read latest stored research brief |
 
 ---
 
 ## Core Workflows
 
 ### Workflow A — Screening Run
-_Triggered by: "Screen my watchlist", "Find me buy candidates", or the nightly scheduler_
+_Triggered by: "Screen my watchlist", "Find me buy candidates", or a scheduled market-session screen_
 
 1. Call TradingView Screener skill with the watchlist tickers
 2. For each ticker with confidence ≥ 0.70:
@@ -63,6 +66,22 @@ _Triggered by: "Find me breakouts outside my watchlist", "Screen semis/AI/cloud 
    - `universe`: the universe description or filter summary
 5. Only add those tickers to `/watchlist` if the user explicitly asks to save them
 6. Report the best candidates and clearly note they came from an off-watchlist screen
+
+### Workflow A3 — Weekly Research Brief Generation
+_Triggered by: weekly research cron, strategy refresh, or before a new market session design change_
+
+1. Call `GET /research/context?market=US|HK`
+2. Read `output_contract` and follow it exactly
+3. Treat the watchlist as dynamic. Compare current watchlist members against fresh candidates for the same market instead of defaulting to no changes.
+4. If conviction is limited from the current watchlist alone, run a broader market scan with the available skills to find better replacements before finalizing the brief.
+5. Produce a JSON object, not markdown
+6. Use market-correct tickers in watchlist changes
+   - US examples: `NVDA`, `AAPL`
+   - HK examples: `0700.HK`, `9988.HK`
+7. Prefer a focused watchlist. Add names when they deserve inclusion and remove names when they no longer earn their slot.
+8. If `watchlist_add` and `watchlist_remove` are both empty, the rationale must explicitly say why every current member still beats plausible replacements.
+9. Submit the JSON to `POST /research`
+10. Expect the server to post a short research summary update after successful ingestion
 
 ### Workflow B — Single Ticker Deep Dive
 _Triggered by: "Analyse NVDA", "Should I buy AAPL?"_
@@ -98,6 +117,14 @@ _Triggered by: "Buy 10 AAPL", "Sell my TSLA position"_
 
 ---
 
+### Workflow E — Weekly Blog Review
+_Triggered by: weekly review cron or end-of-week performance recap_
+
+1. Call `GET /blog/context`
+2. Use both top-level metrics and `market_breakdown.US` / `market_breakdown.HK`
+3. Write the review with separate US and HK sections when there is material activity in both
+4. Call `POST /blog`
+
 ## Memory Rules
 
 - **Always read `/history` before making a buy decision** — check if you've traded this ticker before and what happened
@@ -105,6 +132,10 @@ _Triggered by: "Buy 10 AAPL", "Sell my TSLA position"_
 - **Always store reasoning in the `note` field** — future-you will read this
 - **After every screen run, push signals to `POST /screen`** — this keeps the server's DB current
 - **For off-watchlist TradingView scans, store `screen_scope`, `screen_label`, and `universe` in `POST /screen`** — this preserves provenance without polluting the watchlist
+- **For every research brief, read `/research/context?market=...` and follow `output_contract` exactly**
+- **Use JSON arrays for `watchlist_add`, `watchlist_remove`, and `earnings_watch`**
+- **For HK watchlist changes, always use Yahoo-format tickers like `0700.HK`**
+- **Do not treat research as a passive summary. Research should actively manage the watchlist when conviction changes.**
 - **After every portfolio review, check `/benchmark`** — report alpha to the user
 
 ---
