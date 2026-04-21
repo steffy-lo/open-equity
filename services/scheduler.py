@@ -57,7 +57,7 @@ def _build_signal_candidates(session: Session, market: Market) -> list[str]:
         .distinct()
     ).all()
     positions = session.exec(select(Position.ticker)).all()
-    watchlist = load_watchlist()
+    watchlist = load_watchlist(market=market)
     candidates = list(set(recent_buys) | set(positions) | set(watchlist[:30]))
     return filter_market_tickers(candidates, market)
 
@@ -110,7 +110,7 @@ def _job_preopen_screen_us():
     logger.info("[scheduler] 🇺🇸 Running US pre-open screen...")
     _run_market_screen(
         market="US",
-        tickers_factory=lambda _session: filter_market_tickers(load_watchlist(), "US"),
+        tickers_factory=lambda _session: load_watchlist(market="US"),
         screen_label="us-preopen",
         empty_message="[scheduler] No US tickers in watchlist, skipping US pre-open screen.",
         success_template="[scheduler] ✅ US pre-open screen: {ticker_count} tickers → {buy_count} buys, {flag_count} flags",
@@ -134,7 +134,7 @@ def _job_preopen_screen_hk():
     logger.info("[scheduler] 🇭🇰 Running HK pre-open screen...")
     _run_market_screen(
         market="HK",
-        tickers_factory=lambda _session: filter_market_tickers(load_watchlist(), "HK"),
+        tickers_factory=lambda _session: load_watchlist(market="HK"),
         screen_label="hk-preopen",
         empty_message="[scheduler] No HK tickers in watchlist, skipping HK pre-open screen.",
         success_template="[scheduler] ✅ HK pre-open screen: {ticker_count} tickers → {buy_count} buys, {flag_count} flags",
@@ -224,6 +224,7 @@ def _run_market_screen(
                 screen_scope="watchlist",
                 screen_label=screen_label,
                 use_watchlist=True,
+                market=market,
             )
             buys = [result for result in results if result["signal"] == "buy"]
             flags = [result for result in results if result["signal"] == "flag"]

@@ -19,6 +19,8 @@ BENCHMARK_SNAPSHOT_CRON = os.getenv("BENCHMARK_SNAPSHOT_CRON", "0 21 * * 1-5")
 
 DB_PATH = str(BASE_DIR / os.getenv("DB_PATH", "open_equity.db"))
 WATCHLIST_PATH = str(BASE_DIR / os.getenv("WATCHLIST_PATH", "watchlist.json"))
+US_WATCHLIST_PATH = str(BASE_DIR / os.getenv("US_WATCHLIST_PATH", "watchlist.us.json"))
+HK_WATCHLIST_PATH = str(BASE_DIR / os.getenv("HK_WATCHLIST_PATH", "watchlist.hk.json"))
 
 # ─────────────────────────────────────────────────────────────
 # Autonomous Trading Pipeline

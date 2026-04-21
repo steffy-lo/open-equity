@@ -46,7 +46,7 @@ def build_research_context(market: Market = "US") -> dict:
     cutoff_benchmark = now - timedelta(days=7)
 
     with session_scope() as session:
-        watchlist = filter_market_tickers(load_watchlist(), market)
+        watchlist = load_watchlist(market=market)
         recent_signals = _load_recent_signals(session, market, cutoff_signals)
         benchmark_trend = _load_benchmark_trend(session, cutoff_benchmark)
         prior_brief = _load_latest_brief_row(session, market)
@@ -84,11 +84,11 @@ def ingest_brief(brief: dict) -> dict:
 
     # Apply watchlist changes first so subsequent screens use the newest set.
     if added:
-        new_watchlist = add_to_watchlist(added)
+        new_watchlist = add_to_watchlist(added, market=market)
         logger.info(f"[research_agent] {market} watchlist +{added} total={len(new_watchlist)}")
 
     if removed:
-        new_watchlist = remove_from_watchlist(removed)
+        new_watchlist = remove_from_watchlist(removed, market=market)
         logger.info(f"[research_agent] {market} watchlist -{removed} total={len(new_watchlist)}")
 
     with session_scope() as session:

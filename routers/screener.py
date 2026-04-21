@@ -1,11 +1,12 @@
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session, col, select
 
 from database import Signal, get_session
 from services.scheduler import get_scheduler_status
+from services.markets import Market
 from services.screener import (
     add_to_watchlist,
     get_latest_signals,
@@ -48,11 +49,11 @@ class WatchlistRequest(BaseModel):
 
 
 @router.post("/screen")
-def screen(payload: ScreenRequest, session: Session = Depends(get_session)):
+def screen(payload: ScreenRequest, market: Optional[Market] = Query(None), session: Session = Depends(get_session)):
     tickers = [ticker.upper() for ticker in (payload.tickers or [])]
 
     if payload.save_to_watchlist and tickers:
-        add_to_watchlist(tickers)
+        add_to_watchlist(tickers, market=market)
 
     if tickers or payload.use_watchlist:
         results = run_screen(
@@ -62,6 +63,7 @@ def screen(payload: ScreenRequest, session: Session = Depends(get_session)):
             screen_label=payload.screen_label,
             universe=payload.universe,
             use_watchlist=payload.use_watchlist,
+            market=market,
         )
         return {
             "screen": {
@@ -84,7 +86,7 @@ def screen(payload: ScreenRequest, session: Session = Depends(get_session)):
             signal_dicts.append(item)
 
         if payload.save_to_watchlist:
-            add_to_watchlist([signal["ticker"] for signal in signal_dicts])
+            add_to_watchlist([signal["ticker"] for signal in signal_dicts], market=market)
 
         result = ingest_signals(signal_dicts, session)
         return {"ingested": result}
@@ -143,15 +145,21 @@ def signal_history(ticker: str, session: Session = Depends(get_session)):
 
 
 @router.get("/watchlist")
-def get_watchlist():
-    tickers = load_watchlist()
-    return {"tickers": tickers, "count": len(tickers)}
+def get_watchlist(market: Optional[Market] = Query(None)):
+    tickers = load_watchlist(market=market)
+    payload = {"tickers": tickers, "count": len(tickers)}
+    if market:
+        payload["market"] = market
+    return payload
 
 
 @router.put("/watchlist")
-def update_watchlist(payload: WatchlistRequest):
-    tickers = add_to_watchlist(payload.tickers) if payload.action == "add" else remove_from_watchlist(payload.tickers)
-    return {"tickers": tickers, "count": len(tickers)}
+def update_watchlist(payload: WatchlistRequest, market: Optional[Market] = Query(None)):
+    tickers = add_to_watchlist(payload.tickers, market=market) if payload.action == "add" else remove_from_watchlist(payload.tickers, market=market)
+    response = {"tickers": tickers, "count": len(tickers)}
+    if market:
+        response["market"] = market
+    return response
 
 
 @router.get("/scheduler")
