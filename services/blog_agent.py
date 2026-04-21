@@ -284,12 +284,14 @@ def _build_market_breakdown(
 
 
 def _serialize_positions(positions: list[Position]) -> list[dict]:
+    # Position rows currently store ticker, size, and average cost only.
+    # Keep the blog context aligned with the actual schema instead of assuming
+    # an `opened_at` column exists.
     return [
         {
             "ticker": position.ticker,
             "qty": position.qty,
             "avg_cost": position.avg_cost,
-            "opened_at": position.opened_at.isoformat() + "Z" if position.opened_at else None,
         }
         for position in positions
     ]
