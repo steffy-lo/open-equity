@@ -23,7 +23,7 @@ def _telegram_target_parts(target: str) -> tuple[str, str | None]:
     return raw, None
 
 
-def send_openclaw_message(*, channel: str, target: str, message: str, account_id: str | None = None) -> dict[str, Any]:
+def send_openclaw_message(*, channel: str, target: str, message: str, account_id: str | None = None, wait: bool = True) -> dict[str, Any]:
     if not target:
         return {"ok": False, "skipped": True, "reason": "missing_target"}
 
@@ -50,6 +50,15 @@ def send_openclaw_message(*, channel: str, target: str, message: str, account_id
         command.extend(["--target", target])
 
     try:
+        if not wait:
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return {"ok": True, "queued": True}
+
         completed = subprocess.run(
             command,
             check=True,
