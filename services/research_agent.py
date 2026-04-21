@@ -21,7 +21,13 @@ from sqlmodel import col, select
 
 from database import BenchmarkSnapshot, ResearchBrief, Signal, session_scope
 from services.market_data import get_price_data, get_technicals
-from services.markets import Market, filter_market_tickers, infer_market
+from services.markets import (
+    Market,
+    filter_market_tickers,
+    infer_market,
+    normalize_market_tickers,
+    normalize_ticker,
+)
 from services.screener import add_to_watchlist, load_watchlist, remove_from_watchlist
 
 logger = logging.getLogger(__name__)
@@ -47,9 +53,10 @@ def build_research_context(market: Market = "US") -> dict:
         "recent_signals": recent_signals,
         "benchmark_trend": benchmark_trend,
         "prior_brief": _serialize_brief(prior_brief, include_created_at=False),
+        "output_contract": _research_output_contract(market),
         "next_step": (
-            f"Analyse this {market} market data, then POST your strategy brief to POST /research. "
-            "See /docs for the expected JSON schema."
+            f"Analyse this {market} market data, produce a JSON brief that matches output_contract exactly, "
+            "then POST that JSON to POST /research."
         ),
     }
 
@@ -57,10 +64,11 @@ def build_research_context(market: Market = "US") -> dict:
 
 def ingest_brief(brief: dict) -> dict:
     """Store a market-specific research brief and apply watchlist changes."""
-    market: Market = brief.get("market", "US")
+    normalized = _normalize_brief(brief)
+    market: Market = normalized["market"]
     today = _this_monday()
-    added = [ticker.upper() for ticker in (brief.get("watchlist_add") or [])]
-    removed = [ticker.upper() for ticker in (brief.get("watchlist_remove") or [])]
+    added = normalized["watchlist_add"]
+    removed = normalized["watchlist_remove"]
 
     if added:
         new_watchlist = add_to_watchlist(added)
@@ -73,20 +81,20 @@ def ingest_brief(brief: dict) -> dict:
     with session_scope() as session:
         record = ResearchBrief(
             market=market,
-            week_of=brief.get("week_of", today),
-            strategy=brief.get("strategy", "mixed"),
-            time_horizon=brief.get("time_horizon", ""),
-            risk_posture=brief.get("risk_posture", "moderate"),
-            themes=json.dumps(brief.get("themes", [])),
-            focus_sectors=json.dumps(brief.get("focus_sectors", [])),
-            avoid_sectors=json.dumps(brief.get("avoid_sectors", [])),
+            week_of=normalized["week_of"],
+            strategy=normalized["strategy"],
+            time_horizon=normalized["time_horizon"],
+            risk_posture=normalized["risk_posture"],
+            themes=json.dumps(normalized["themes"]),
+            focus_sectors=json.dumps(normalized["focus_sectors"]),
+            avoid_sectors=json.dumps(normalized["avoid_sectors"]),
             watchlist_add=json.dumps(added),
             watchlist_remove=json.dumps(removed),
-            earnings_watch=json.dumps(brief.get("earnings_watch", [])),
-            macro_summary=brief.get("macro_summary", ""),
-            key_risks=brief.get("key_risks", ""),
-            rationale=brief.get("rationale", ""),
-            raw_json=json.dumps(brief),
+            earnings_watch=json.dumps(normalized["earnings_watch"]),
+            macro_summary=normalized["macro_summary"],
+            key_risks=normalized["key_risks"],
+            rationale=normalized["rationale"],
+            raw_json=json.dumps(normalized),
         )
         session.add(record)
         session.commit()
@@ -94,12 +102,12 @@ def ingest_brief(brief: dict) -> dict:
 
     logger.info(
         f"[research_agent] ✅ {market} brief stored id={record_id} "
-        f"strategy={brief.get('strategy')} posture={brief.get('risk_posture')}"
+        f"strategy={normalized['strategy']} posture={normalized['risk_posture']}"
     )
     return {
         "id": record_id,
         "market": market,
-        "week_of": brief.get("week_of", today),
+        "week_of": normalized["week_of"],
         "watchlist_added": added,
         "watchlist_removed": removed,
         "stored_at": datetime.now(timezone.utc).isoformat() + "Z",
@@ -214,6 +222,112 @@ def _serialize_brief(row: ResearchBrief | None, *, include_created_at: bool = Tr
     if include_created_at:
         payload["created_at"] = row.created_at.isoformat() + "Z"
     return payload
+
+
+
+def _normalize_brief(brief: dict) -> dict:
+    market: Market = brief.get("market", "US")
+    return {
+        "market": market,
+        "week_of": brief.get("week_of") or _this_monday(),
+        "macro_summary": _clean_text(brief.get("macro_summary")),
+        "strategy": brief.get("strategy") or "mixed",
+        "time_horizon": _clean_text(brief.get("time_horizon")),
+        "risk_posture": brief.get("risk_posture") or "moderate",
+        "themes": _clean_string_list(brief.get("themes")),
+        "focus_sectors": _clean_string_list(brief.get("focus_sectors")),
+        "avoid_sectors": _clean_string_list(brief.get("avoid_sectors")),
+        "watchlist_add": normalize_market_tickers(_coerce_ticker_list(brief.get("watchlist_add")), market),
+        "watchlist_remove": normalize_market_tickers(_coerce_ticker_list(brief.get("watchlist_remove")), market),
+        "earnings_watch": _normalize_optional_tickers(brief.get("earnings_watch"), market),
+        "key_risks": _clean_text(brief.get("key_risks")),
+        "rationale": _clean_text(brief.get("rationale")),
+    }
+
+
+
+def _research_output_contract(market: Market) -> dict:
+    example_ticker = "0700.HK" if market == "HK" else "NVDA"
+    return {
+        "required_post_target": "/research",
+        "format": "json-object",
+        "rules": [
+            f"Set market to {market}.",
+            "Return arrays for list fields, not comma-separated strings.",
+            "Only include tickers that belong to the current market in watchlist_add, watchlist_remove, and earnings_watch.",
+            f"For {market} watchlist changes, normalize tickers like {example_ticker} before posting.",
+            "Keep macro_summary, key_risks, and rationale concise but explicit.",
+        ],
+        "schema": {
+            "market": market,
+            "week_of": "YYYY-MM-DD",
+            "macro_summary": "string",
+            "strategy": "momentum|mean_reversion|sector_rotation|defensive|mixed",
+            "time_horizon": "string",
+            "risk_posture": "aggressive|moderate|conservative",
+            "themes": ["string"],
+            "focus_sectors": ["string"],
+            "avoid_sectors": ["string"],
+            "watchlist_add": [example_ticker],
+            "watchlist_remove": [example_ticker],
+            "earnings_watch": [example_ticker],
+            "key_risks": "string",
+            "rationale": "string",
+        },
+        "examples": {
+            "watchlist_add": [example_ticker],
+            "watchlist_remove": [],
+        },
+    }
+
+
+
+def _coerce_ticker_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+
+def _normalize_optional_tickers(value, market: Market) -> list[str]:
+    tickers = _coerce_ticker_list(value)
+    normalized = []
+    seen: set[str] = set()
+    for ticker in tickers:
+        candidate = normalize_ticker(ticker, market=market)
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+
+def _clean_string_list(value) -> list[str]:
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else value
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = _clean_text(item)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+    return cleaned
+
+
+
+def _clean_text(value) -> str:
+    return " ".join(str(value or "").strip().split())
 
 
 

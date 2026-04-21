@@ -31,6 +31,9 @@ Base URL: `http://localhost:5000`
 | `GET` | `/signals` | Latest screener output |
 | `GET` | `/watchlist` | View watchlist |
 | `PUT` | `/watchlist` | Manage watchlist |
+| `GET` | `/research/context?market=US|HK` | Fetch structured research context |
+| `POST` | `/research` | Submit structured research brief |
+| `GET` | `/research/latest?market=US|HK` | Read latest stored research brief |
 
 ---
 
@@ -63,6 +66,18 @@ _Triggered by: "Find me breakouts outside my watchlist", "Screen semis/AI/cloud 
    - `universe`: the universe description or filter summary
 5. Only add those tickers to `/watchlist` if the user explicitly asks to save them
 6. Report the best candidates and clearly note they came from an off-watchlist screen
+
+### Workflow A3 — Weekly Research Brief Generation
+_Triggered by: weekly research cron, strategy refresh, or before a new market session design change_
+
+1. Call `GET /research/context?market=US|HK`
+2. Read `output_contract` and follow it exactly
+3. Produce a JSON object, not markdown
+4. Use market-correct tickers in watchlist changes
+   - US examples: `NVDA`, `AAPL`
+   - HK examples: `0700.HK`, `9988.HK`
+5. Submit the JSON to `POST /research`
+6. Only add or remove tickers when the rationale clearly supports the change
 
 ### Workflow B — Single Ticker Deep Dive
 _Triggered by: "Analyse NVDA", "Should I buy AAPL?"_
@@ -105,6 +120,9 @@ _Triggered by: "Buy 10 AAPL", "Sell my TSLA position"_
 - **Always store reasoning in the `note` field** — future-you will read this
 - **After every screen run, push signals to `POST /screen`** — this keeps the server's DB current
 - **For off-watchlist TradingView scans, store `screen_scope`, `screen_label`, and `universe` in `POST /screen`** — this preserves provenance without polluting the watchlist
+- **For every research brief, read `/research/context?market=...` and follow `output_contract` exactly**
+- **Use JSON arrays for `watchlist_add`, `watchlist_remove`, and `earnings_watch`**
+- **For HK watchlist changes, always use Yahoo-format tickers like `0700.HK`**
 - **After every portfolio review, check `/benchmark`** — report alpha to the user
 
 ---
