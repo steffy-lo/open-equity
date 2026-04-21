@@ -14,6 +14,14 @@ TRADING_FEE_PCT = float(os.getenv("TRADING_FEE_PCT", "0.001"))
 BENCHMARK_TICKER = os.getenv("BENCHMARK_TICKER", "SPY")
 PRICE_CACHE_TTL = int(os.getenv("PRICE_CACHE_TTL", "60"))
 MIN_SIGNAL_CONFIDENCE = float(os.getenv("MIN_SIGNAL_CONFIDENCE", "0.70"))
+BASIC_MIN_SIGNAL_CONFIDENCE = float(os.getenv("BASIC_MIN_SIGNAL_CONFIDENCE", str(MIN_SIGNAL_CONFIDENCE)))
+MOMENTUM_MIN_SIGNAL_CONFIDENCE = float(os.getenv("MOMENTUM_MIN_SIGNAL_CONFIDENCE", "0.58"))
+EXEC_MIN_SIGNAL_CONFIDENCE = float(
+    os.getenv(
+        "EXEC_MIN_SIGNAL_CONFIDENCE",
+        str(min(BASIC_MIN_SIGNAL_CONFIDENCE, MOMENTUM_MIN_SIGNAL_CONFIDENCE)),
+    )
+)
 
 BENCHMARK_SNAPSHOT_CRON = os.getenv("BENCHMARK_SNAPSHOT_CRON", "0 21 * * 1-5")
 
@@ -50,6 +58,7 @@ MOMENTUM_SCAN_LIMIT: int = int(os.getenv("MOMENTUM_SCAN_LIMIT", "8"))
 MOMENTUM_MIN_PRICE: float = float(os.getenv("MOMENTUM_MIN_PRICE", "3"))
 MOMENTUM_MIN_MARKET_CAP: float = float(os.getenv("MOMENTUM_MIN_MARKET_CAP", "1000000000"))
 MOMENTUM_MIN_AVG_VOLUME: float = float(os.getenv("MOMENTUM_MIN_AVG_VOLUME", "500000"))
+MOMENTUM_FLAG_RSI_MAX: float = float(os.getenv("MOMENTUM_FLAG_RSI_MAX", "84"))
 
 # Pipeline update notifications. If a topic is blank, that update type is skipped.
 TRADE_UPDATE_CHANNEL: str = os.getenv("TRADE_UPDATE_CHANNEL", "telegram")

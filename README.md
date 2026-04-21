@@ -52,6 +52,12 @@ The autonomous pipeline is split across two layers:
 
 The research context can now also include **off-watchlist momentum candidates** discovered from the TradingView screener skill when that optional local integration is available.
 
+The local screener now supports **dual buy profiles**:
+- **basic** for balanced quality-trend swing setups
+- **momentum** for breakout-friendly setups
+
+A local signal becomes `buy` if it passes **either** profile. The stored signal can include `buy_profile = basic | momentum | both` plus profile-specific confidence values.
+
 That means `/research/context` and `/blog/context` are **prep jobs**, while `POST /research` and `POST /blog` are **follow-up OpenClaw jobs** that should run shortly afterwards.
 
 ## API Quick Reference
@@ -147,6 +153,11 @@ curl "http://localhost:5000/signals?screen_scope=custom_universe"
 curl "http://localhost:5000/signals?screen_label=AI%20infra%20mega-cap%20scan"
 ```
 
+Local screener results can also include:
+- `buy_profile`
+- `basic_confidence`
+- `momentum_confidence`
+
 ### View trade history (OpenClaw's memory)
 ```bash
 curl "http://localhost:5000/history?limit=20"
@@ -208,6 +219,19 @@ Research brief updates send a short market summary with strategy, themes, watchl
 ### Optional momentum screener integration
 
 If you want the pipeline to discover new names outside the watchlist, install the TradingView screener skill and point `MOMENTUM_SCREENER_PYTHON` at that venv's Python. The server calls `scripts/momentum_scan.py` through that interpreter, so `tvscreener` does not need to live in the main `open-equity` venv.
+
+### Dual-profile signal thresholds
+
+The local screener supports separate thresholds for the two local profiles:
+
+```bash
+BASIC_MIN_SIGNAL_CONFIDENCE=0.70
+MOMENTUM_MIN_SIGNAL_CONFIDENCE=0.58
+EXEC_MIN_SIGNAL_CONFIDENCE=0.58
+MOMENTUM_FLAG_RSI_MAX=84
+```
+
+This lets the autonomous pipeline treat momentum breakouts more flexibly without weakening the default balanced screener for everything else.
 
 ---
 

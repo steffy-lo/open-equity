@@ -64,7 +64,7 @@ def main() -> None:
     results = []
     for _, row in df.iterrows():
         ticker = str(row[name_col]).upper().strip()
-        if not ticker or ticker in exclude:
+        if not ticker or ticker in exclude or "/" in ticker:
             continue
         sma50 = row[sma50_col]
         sma200 = row[sma200_col]
