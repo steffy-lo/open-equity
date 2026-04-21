@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_research_context(market: Market = "US") -> dict:
-    """Build market-filtered research context for OpenClaw reasoning."""
+    """Build the exact bundle OpenClaw needs before generating a research brief."""
     now = datetime.now(timezone.utc)
     cutoff_signals = now - timedelta(days=5)
     cutoff_benchmark = now - timedelta(days=7)
@@ -70,13 +70,14 @@ def build_research_context(market: Market = "US") -> dict:
 
 
 def ingest_brief(brief: dict) -> dict:
-    """Store a market-specific research brief and apply watchlist changes."""
+    """Normalize, store, and fan out a market-specific research brief."""
     normalized = _normalize_brief(brief)
     market: Market = normalized["market"]
     today = _this_monday()
     added = normalized["watchlist_add"]
     removed = normalized["watchlist_remove"]
 
+    # Apply watchlist changes first so subsequent screens use the newest set.
     if added:
         new_watchlist = add_to_watchlist(added)
         logger.info(f"[research_agent] {market} watchlist +{added} total={len(new_watchlist)}")
@@ -239,6 +240,8 @@ def _serialize_brief(row: ResearchBrief | None, *, include_created_at: bool = Tr
 
 
 def _normalize_brief(brief: dict) -> dict:
+    # The POST body is intentionally forgiving so OpenClaw can focus on analysis.
+    # This layer coerces list fields, dedupes values, and normalizes tickers.
     market: Market = brief.get("market", "US")
     return {
         "market": market,
@@ -260,6 +263,9 @@ def _normalize_brief(brief: dict) -> dict:
 
 
 def _send_research_update(message: str) -> dict:
+    if not RESEARCH_UPDATE_TOPIC:
+        return {"ok": False, "skipped": True, "reason": "research_updates_disabled"}
+
     payload = {
         "accountId": RESEARCH_UPDATE_ACCOUNT_ID,
         "channel": RESEARCH_UPDATE_CHANNEL,

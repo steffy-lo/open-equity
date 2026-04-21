@@ -47,6 +47,10 @@ from services.research_agent import get_latest_brief
 logger = logging.getLogger(__name__)
 
 def _send_trade_update(message: str) -> dict:
+    # Delivery is optional so the example config can stay generic.
+    if not TRADE_UPDATE_TOPIC:
+        return {"ok": False, "skipped": True, "reason": "trade_updates_disabled"}
+
     payload = {
         "accountId": TRADE_UPDATE_ACCOUNT_ID,
         "channel": TRADE_UPDATE_CHANNEL,

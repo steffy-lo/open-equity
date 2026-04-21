@@ -31,15 +31,16 @@ EXEC_STOP_LOSS_PCT: float = float(os.getenv("EXEC_STOP_LOSS_PCT", "0.08"))
 EXEC_TAKE_PROFIT_PCT: float = float(os.getenv("EXEC_TAKE_PROFIT_PCT", "0.20"))
 EXEC_MAX_TRADES_PER_DAY: int = int(os.getenv("EXEC_MAX_TRADES_PER_DAY", "3"))
 
-# Blog output
+# Blog output. Delivery targets intentionally default to blank so real routing
+# stays in the private `.env`, not in repo defaults or examples.
 BLOG_OUTPUT_DIR: str = os.getenv("BLOG_OUTPUT_DIR", "blogs/trading")
-BLOG_FORWARD_TOPIC: str = os.getenv("BLOG_FORWARD_TOPIC", "telegram:-1003765209717:3")
+BLOG_FORWARD_TOPIC: str = os.getenv("BLOG_FORWARD_TOPIC", "")
 BLOG_FORWARD_SUMMARY_MAX_CHARS: int = int(os.getenv("BLOG_FORWARD_SUMMARY_MAX_CHARS", "4000"))
 
-# Pipeline update notifications
+# Pipeline update notifications. If a topic is blank, that update type is skipped.
 TRADE_UPDATE_CHANNEL: str = os.getenv("TRADE_UPDATE_CHANNEL", "telegram")
 TRADE_UPDATE_ACCOUNT_ID: str = os.getenv("TRADE_UPDATE_ACCOUNT_ID", "default")
-TRADE_UPDATE_TOPIC: str = os.getenv("TRADE_UPDATE_TOPIC", "telegram:-1003765209717:428")
+TRADE_UPDATE_TOPIC: str = os.getenv("TRADE_UPDATE_TOPIC", "")
 RESEARCH_UPDATE_CHANNEL: str = os.getenv("RESEARCH_UPDATE_CHANNEL", TRADE_UPDATE_CHANNEL)
 RESEARCH_UPDATE_ACCOUNT_ID: str = os.getenv("RESEARCH_UPDATE_ACCOUNT_ID", TRADE_UPDATE_ACCOUNT_ID)
 RESEARCH_UPDATE_TOPIC: str = os.getenv("RESEARCH_UPDATE_TOPIC", TRADE_UPDATE_TOPIC)

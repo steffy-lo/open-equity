@@ -169,12 +169,13 @@ Configure in `.env`:
 ```bash
 TRADE_UPDATE_CHANNEL=telegram
 TRADE_UPDATE_ACCOUNT_ID=default
-TRADE_UPDATE_TOPIC=telegram:-1003765209717:428
+TRADE_UPDATE_TOPIC=
 RESEARCH_UPDATE_CHANNEL=telegram
 RESEARCH_UPDATE_ACCOUNT_ID=default
-RESEARCH_UPDATE_TOPIC=telegram:-1003765209717:428
+RESEARCH_UPDATE_TOPIC=
 ```
 
+Leave the topic fields blank in repo-tracked examples and set the real Telegram targets only in your private `.env`.
 Trade updates include ticker, side, size, execution price, reason or note, and resulting cash or position context.
 Research brief updates send a short market summary with strategy, themes, watchlist adds/removes, and key risk.
 

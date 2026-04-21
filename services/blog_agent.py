@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 def build_blog_context() -> dict:
+    """Assemble the weekly context consumed by the autonomous `/blog` writer."""
     now = datetime.now(timezone.utc)
     week_start = _last_monday(now)
 
@@ -74,31 +75,23 @@ def build_blog_context() -> dict:
     benchmark_data = _compute_benchmark(snapshots)
     week_label = week_start.strftime("Week of %B %d, %Y")
 
+    # Top-level fields remain available for backwards compatibility, while
+    # `market_breakdown` gives the blog writer an explicit US/HK split.
     research_briefs = {
         "US": get_latest_brief("US") or {},
         "HK": get_latest_brief("HK") or {},
     }
+    serialized_positions = _serialize_positions(positions)
     market_breakdown = {
-        "US": {
-            "trades": [trade for trade in trades_data if infer_market(trade["ticker"]) == "US"],
-            "signals": [signal for signal in signals_data if infer_market(signal["ticker"]) == "US"],
-            "positions": [position for position in _serialize_positions(positions) if infer_market(position["ticker"]) == "US"],
-            "research_brief": research_briefs["US"],
-        },
-        "HK": {
-            "trades": [trade for trade in trades_data if infer_market(trade["ticker"]) == "HK"],
-            "signals": [signal for signal in signals_data if infer_market(signal["ticker"]) == "HK"],
-            "positions": [position for position in _serialize_positions(positions) if infer_market(position["ticker"]) == "HK"],
-            "research_brief": research_briefs["HK"],
-        },
+        market: _build_market_breakdown(
+            market=market,
+            trades=trades_data,
+            signals=signals_data,
+            positions=serialized_positions,
+            research_brief=research_briefs[market],
+        )
+        for market in ("US", "HK")
     }
-
-    for market, payload in market_breakdown.items():
-        payload["summary"] = {
-            "trade_count": len(payload["trades"]),
-            "signal_count": len(payload["signals"]),
-            "position_count": len(payload["positions"]),
-        }
 
     return {
         "generated_at": now.isoformat() + "Z",
@@ -123,6 +116,7 @@ def build_blog_context() -> dict:
 # ─────────────────────────────────────────────────────────────
 
 def ingest_blog_post(payload: dict) -> dict:
+    """Store the generated markdown review and optionally forward a summary."""
     now = datetime.now(timezone.utc)
     week_start = _last_monday(now)
     week_of = week_start.strftime("%Y-%m-%d")
@@ -264,6 +258,31 @@ def _serialize_signal(signal: Signal) -> dict:
 
 
 
+def _build_market_breakdown(
+    *,
+    market: str,
+    trades: list[dict],
+    signals: list[dict],
+    positions: list[dict],
+    research_brief: dict,
+) -> dict:
+    market_trades = [trade for trade in trades if infer_market(trade["ticker"]) == market]
+    market_signals = [signal for signal in signals if infer_market(signal["ticker"]) == market]
+    market_positions = [position for position in positions if infer_market(position["ticker"]) == market]
+    return {
+        "trades": market_trades,
+        "signals": market_signals,
+        "positions": market_positions,
+        "research_brief": research_brief,
+        "summary": {
+            "trade_count": len(market_trades),
+            "signal_count": len(market_signals),
+            "position_count": len(market_positions),
+        },
+    }
+
+
+
 def _serialize_positions(positions: list[Position]) -> list[dict]:
     return [
         {
@@ -324,6 +343,9 @@ def _write_to_disk(iso_week: str, content: str):
 
 
 def _forward_blog_post(title: str, summary: str, content: str, target: str) -> dict:
+    if not target:
+        return {"ok": False, "skipped": True, "reason": "blog_forward_disabled"}
+
     message = _build_forward_message(title=title, summary=summary, content=content)
     payload = {
         "accountId": "default",
