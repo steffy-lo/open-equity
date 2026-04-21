@@ -57,7 +57,7 @@ _last_exit_result:  dict[str, dict] = {}
 # ─────────────────────────────────────────────────────────────
 
 @router.get("/research/context", summary="Fetch research context for OpenClaw")
-def get_research_context():
+def get_research_context(market: Market = Query("US")):
     """
     Returns a pre-packaged data bundle: watchlist technicals, recent signals,
     benchmark trend, and the prior week's brief.
@@ -67,10 +67,11 @@ def get_research_context():
       2. Reason about macro, strategy, and which tickers to watch
       3. POST the resulting brief to POST /research
     """
-    return build_research_context()
+    return build_research_context(market=market)
 
 
 class ResearchBriefPayload(BaseModel):
+    market:           Market              = "US"
     week_of:          Optional[str]       = None
     macro_summary:    Optional[str]       = None
     strategy:         Optional[str]       = "mixed"   # momentum|mean_reversion|sector_rotation|defensive|mixed
@@ -98,8 +99,8 @@ def post_research_brief(payload: ResearchBriefPayload):
 
 
 @router.get("/research/latest", summary="Get the latest research brief")
-def get_latest_research():
-    brief = get_latest_brief()
+def get_latest_research(market: Market = Query("US")):
+    brief = get_latest_brief(market=market)
     if not brief:
         raise HTTPException(status_code=404, detail="No research briefs found")
     return brief

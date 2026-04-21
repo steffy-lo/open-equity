@@ -196,7 +196,7 @@ def run_entry_pass(market: Market = "US") -> dict:
         remaining_slots = EXEC_MAX_TRADES_PER_DAY - len(trades_today)
 
         # ── Research brief for context ─────────────────────────
-        brief           = get_latest_brief() or {}
+        brief           = get_latest_brief(market=market) or {}
         earnings_blackout = set(brief.get("earnings_watch", []))
         avoid_sectors     = set(brief.get("avoid_sectors", []))
         risk_posture      = brief.get("risk_posture", "moderate")

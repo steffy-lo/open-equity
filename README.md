@@ -138,19 +138,27 @@ curl "http://localhost:5000/history?ticker=NVDA"
 curl http://localhost:5000/benchmark
 ```
 
-### Manual autonomous pipeline triggers
+### Manual autonomous research and pipeline triggers
 
 ```bash
-# US market (default)
+# Research context
+curl "http://localhost:5000/research/context?market=US"
+curl "http://localhost:5000/research/context?market=HK"
+
+# Latest market-specific research brief
+curl "http://localhost:5000/research/latest?market=US"
+curl "http://localhost:5000/research/latest?market=HK"
+
+# US market execution
 curl -X POST "http://localhost:5000/pipeline/entry"
 curl -X POST "http://localhost:5000/pipeline/exit"
 
-# Hong Kong market
+# Hong Kong market execution
 curl -X POST "http://localhost:5000/pipeline/entry?market=HK"
 curl -X POST "http://localhost:5000/pipeline/exit?market=HK"
 ```
 
-`GET /pipeline/status` now returns separate last-run results for US and HK passes.
+`GET /pipeline/status` returns separate last-run results for US and HK entry and exit passes.
 
 ### Autonomous trade updates to Telegram
 
@@ -170,11 +178,28 @@ Each update includes ticker, side, size, execution price, reason or note, and re
 
 ## Background Jobs
 
+### US
+
 | Job | Schedule (ET) | What it does |
 |---|---|---|
 | Nightly screen | 8pm Mon–Fri | Full watchlist scan, stores signals |
 | Intraday screen | Every 15min 9am–4pm Mon–Fri | Re-scans recent buy candidates + open positions |
+| Research context | 7am Monday | Prepares weekly US research context |
+| Entry pass | 9:35am Mon–Fri | Consumes stored buy signals and executes eligible entries |
+| Exit pass | 3:45pm Mon–Fri | Checks stop-loss and take-profit exits |
 | Benchmark snapshot | 9pm Mon–Fri | Stores daily portfolio value vs SPY |
+
+### Hong Kong parity
+
+| Job | Schedule (HKT) | What it does |
+|---|---|---|
+| Research context | 9:00am Monday | Prepares weekly HK research context |
+| Pre-open screen | 9:15am Mon–Fri | Builds fresh HK signals before the AM entry pass |
+| Midday screen | 12:45pm Mon–Fri | Refreshes HK signals before the PM entry pass |
+| Entry pass (AM) | 9:30am Mon–Fri | Consumes stored HK buy signals and executes eligible entries |
+| Exit pass (AM) | 12:00pm Mon–Fri | Checks HK lunch-session exits |
+| Entry pass (PM) | 1:00pm Mon–Fri | Consumes refreshed HK buy signals and executes eligible entries |
+| Exit pass (PM) | 4:00pm Mon–Fri | Checks HK close-session exits |
 
 Adjust schedules in `.env` using standard 5-field cron syntax.
 
