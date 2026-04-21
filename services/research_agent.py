@@ -17,8 +17,15 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+import requests
 from sqlmodel import col, select
 
+from config import (
+    OPENCLAW_GATEWAY_URL,
+    RESEARCH_UPDATE_ACCOUNT_ID,
+    RESEARCH_UPDATE_CHANNEL,
+    RESEARCH_UPDATE_TOPIC,
+)
 from database import BenchmarkSnapshot, ResearchBrief, Signal, session_scope
 from services.market_data import get_price_data, get_technicals
 from services.markets import (
@@ -104,6 +111,9 @@ def ingest_brief(brief: dict) -> dict:
         f"[research_agent] ✅ {market} brief stored id={record_id} "
         f"strategy={normalized['strategy']} posture={normalized['risk_posture']}"
     )
+
+    notification = _send_research_update(_format_research_update(normalized))
+
     return {
         "id": record_id,
         "market": market,
@@ -111,6 +121,9 @@ def ingest_brief(brief: dict) -> dict:
         "watchlist_added": added,
         "watchlist_removed": removed,
         "stored_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "notified": notification.get("ok", False),
+        "notification_target": notification.get("target"),
+        "notification_error": notification.get("error"),
     }
 
 
@@ -243,6 +256,48 @@ def _normalize_brief(brief: dict) -> dict:
         "key_risks": _clean_text(brief.get("key_risks")),
         "rationale": _clean_text(brief.get("rationale")),
     }
+
+
+
+def _send_research_update(message: str) -> dict:
+    payload = {
+        "accountId": RESEARCH_UPDATE_ACCOUNT_ID,
+        "channel": RESEARCH_UPDATE_CHANNEL,
+        "to": RESEARCH_UPDATE_TOPIC,
+        "message": message,
+    }
+    try:
+        response = requests.post(
+            f"{OPENCLAW_GATEWAY_URL.rstrip('/')}/messages",
+            json=payload,
+            timeout=15,
+        )
+        response.raise_for_status()
+        return {"ok": True, "target": RESEARCH_UPDATE_TOPIC}
+    except Exception as exc:
+        logger.warning(f"[research_agent] Research update delivery failed: {exc}")
+        return {"ok": False, "target": RESEARCH_UPDATE_TOPIC, "error": str(exc)}
+
+
+
+def _format_research_update(brief: dict) -> str:
+    market = brief["market"]
+    icon = "🧠🇭🇰" if market == "HK" else "🧠🇺🇸"
+    themes = ", ".join(brief.get("themes") or []) or "None"
+    added = ", ".join(brief.get("watchlist_add") or []) or "None"
+    removed = ", ".join(brief.get("watchlist_remove") or []) or "None"
+    key_risk = brief.get("key_risks") or "None"
+    return "\n".join(
+        [
+            f"{icon} {market} weekly research ready",
+            "",
+            f"• Strategy: {brief.get('strategy', 'mixed')} | Risk: {brief.get('risk_posture', 'moderate')}",
+            f"• Themes: {themes}",
+            f"• Watchlist adds: {added}",
+            f"• Watchlist removes: {removed}",
+            f"• Key risk: {key_risk[:220]}",
+        ]
+    )
 
 
 

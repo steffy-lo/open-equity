@@ -37,10 +37,13 @@ BLOG_OUTPUT_DIR: str = os.getenv("BLOG_OUTPUT_DIR", "blogs/trading")
 BLOG_FORWARD_TOPIC: str = os.getenv("BLOG_FORWARD_TOPIC", "telegram:-1003765209717:3")
 BLOG_FORWARD_SUMMARY_MAX_CHARS: int = int(os.getenv("BLOG_FORWARD_SUMMARY_MAX_CHARS", "4000"))
 
-# Trade update notifications
+# Pipeline update notifications
 TRADE_UPDATE_CHANNEL: str = os.getenv("TRADE_UPDATE_CHANNEL", "telegram")
 TRADE_UPDATE_ACCOUNT_ID: str = os.getenv("TRADE_UPDATE_ACCOUNT_ID", "default")
 TRADE_UPDATE_TOPIC: str = os.getenv("TRADE_UPDATE_TOPIC", "telegram:-1003765209717:428")
+RESEARCH_UPDATE_CHANNEL: str = os.getenv("RESEARCH_UPDATE_CHANNEL", TRADE_UPDATE_CHANNEL)
+RESEARCH_UPDATE_ACCOUNT_ID: str = os.getenv("RESEARCH_UPDATE_ACCOUNT_ID", TRADE_UPDATE_ACCOUNT_ID)
+RESEARCH_UPDATE_TOPIC: str = os.getenv("RESEARCH_UPDATE_TOPIC", TRADE_UPDATE_TOPIC)
 OPENCLAW_GATEWAY_URL: str = os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789")
 
 # US session pipeline crons (5-field, America/New_York)

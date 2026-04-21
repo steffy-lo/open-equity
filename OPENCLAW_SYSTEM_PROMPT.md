@@ -77,7 +77,8 @@ _Triggered by: weekly research cron, strategy refresh, or before a new market se
    - US examples: `NVDA`, `AAPL`
    - HK examples: `0700.HK`, `9988.HK`
 5. Submit the JSON to `POST /research`
-6. Only add or remove tickers when the rationale clearly supports the change
+6. Expect the server to post a short research summary update after successful ingestion
+7. Only add or remove tickers when the rationale clearly supports the change
 
 ### Workflow B — Single Ticker Deep Dive
 _Triggered by: "Analyse NVDA", "Should I buy AAPL?"_
@@ -112,6 +113,14 @@ _Triggered by: "Buy 10 AAPL", "Sell my TSLA position"_
 4. Confirm fill to user with order_id and cash remaining
 
 ---
+
+### Workflow E — Weekly Blog Review
+_Triggered by: weekly review cron or end-of-week performance recap_
+
+1. Call `GET /blog/context`
+2. Use both top-level metrics and `market_breakdown.US` / `market_breakdown.HK`
+3. Write the review with separate US and HK sections when there is material activity in both
+4. Call `POST /blog`
 
 ## Memory Rules
 
