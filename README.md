@@ -50,6 +50,8 @@ The autonomous pipeline is split across two layers:
    - call `/blog/context` and submit the finished markdown review to `POST /blog`
    - can post concise pipeline updates to Telegram when private delivery targets are configured in `.env`
 
+The research context can now also include **off-watchlist momentum candidates** discovered from the TradingView screener skill when that optional local integration is available.
+
 That means `/research/context` and `/blog/context` are **prep jobs**, while `POST /research` and `POST /blog` are **follow-up OpenClaw jobs** that should run shortly afterwards.
 
 ## API Quick Reference
@@ -178,6 +180,12 @@ curl -X POST "http://localhost:5000/pipeline/exit?market=HK"
 
 `GET /pipeline/status` returns separate last-run results for US and HK entry and exit passes.
 
+### Research context with momentum discovery
+
+`GET /research/context?market=US|HK` can include a `momentum_candidates` array. These are off-watchlist names discovered by the optional momentum scan and meant to help the OpenClaw research writer decide whether to rotate the watchlist.
+
+The autonomous pre-open and midday screen jobs also run this momentum discovery step when enabled, then score those candidates through the local screener so the execution agent can act on fresh buy signals outside the existing watchlist.
+
 ### Autonomous trade updates to Telegram
 
 The execution agent can forward every autonomous buy or sell to an OpenClaw-routed Telegram target. HK tickers are tagged as `Market: HK` and use `HK$` in the execution price line.
@@ -196,6 +204,10 @@ RESEARCH_UPDATE_TOPIC=
 Leave the topic fields blank in repo-tracked examples and set the real Telegram targets only in your private `.env`.
 Trade updates include ticker, side, size, execution price, reason or note, and resulting cash or position context.
 Research brief updates send a short market summary with strategy, themes, watchlist adds/removes, and key risk.
+
+### Optional momentum screener integration
+
+If you want the pipeline to discover new names outside the watchlist, install the TradingView screener skill and point `MOMENTUM_SCREENER_PYTHON` at that venv's Python. The server calls `scripts/momentum_scan.py` through that interpreter, so `tvscreener` does not need to live in the main `open-equity` venv.
 
 ---
 

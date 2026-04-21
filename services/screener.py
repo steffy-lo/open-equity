@@ -25,6 +25,7 @@ from sqlmodel import Session, select, col
 from database import Signal, engine
 from services.market_data import get_price_data, get_technicals
 from config import HK_WATCHLIST_PATH, MIN_SIGNAL_CONFIDENCE, US_WATCHLIST_PATH, WATCHLIST_PATH
+from services.momentum_discovery import discover_momentum_candidates
 from services.markets import Market, infer_market, normalize_market_tickers
 
 logger = logging.getLogger(__name__)
@@ -389,6 +390,30 @@ def run_screen(
 
     results.sort(key=lambda x: (_SIGNAL_ORDER.get(x["signal"], 3), -x.get("confidence", 0)))
     return results
+
+
+def run_momentum_discovery_screen(
+    *,
+    market: Market,
+    session: Session | None = None,
+    exclude_tickers: list[str] | None = None,
+    screen_label: str | None = None,
+) -> list:
+    excluded = normalize_market_tickers((exclude_tickers or []) + load_watchlist(market=market), market)
+    candidates = discover_momentum_candidates(market, exclude_tickers=excluded)
+    tickers = [candidate["ticker"] for candidate in candidates if candidate.get("ticker")]
+    if not tickers:
+        return []
+
+    return run_screen(
+        tickers=tickers,
+        session=session,
+        screen_scope="custom_universe",
+        screen_label=screen_label or f"{market.lower()}-momentum-discovery",
+        universe=f"{market} momentum candidates outside watchlist",
+        use_watchlist=False,
+        market=market,
+    )
 
 
 # ─────────────────────────────────────────────────────────────

@@ -39,7 +39,7 @@ from config import (
 from database import Signal, Position, engine
 from services.markets import Market, filter_market_tickers
 from services.portfolio_engine import take_benchmark_snapshot
-from services.screener import load_watchlist, run_screen
+from services.screener import load_watchlist, run_momentum_discovery_screen, run_screen
 
 logger = logging.getLogger(__name__)
 _scheduler: BackgroundScheduler = None
@@ -114,6 +114,7 @@ def _job_preopen_screen_us():
         screen_label="us-preopen",
         empty_message="[scheduler] No US tickers in watchlist, skipping US pre-open screen.",
         success_template="[scheduler] ✅ US pre-open screen: {ticker_count} tickers → {buy_count} buys, {flag_count} flags",
+        include_momentum_discovery=True,
     )
 
 
@@ -126,6 +127,7 @@ def _job_midday_screen_us():
         screen_label="us-midday-refresh",
         empty_message="[scheduler] No US candidates for midday screen refresh.",
         success_template="[scheduler] ✅ US midday screen: {ticker_count} tickers, {buy_count} buy signals",
+        include_momentum_discovery=True,
     )
 
 
@@ -138,6 +140,7 @@ def _job_preopen_screen_hk():
         screen_label="hk-preopen",
         empty_message="[scheduler] No HK tickers in watchlist, skipping HK pre-open screen.",
         success_template="[scheduler] ✅ HK pre-open screen: {ticker_count} tickers → {buy_count} buys, {flag_count} flags",
+        include_momentum_discovery=True,
     )
 
 
@@ -150,6 +153,7 @@ def _job_midday_screen_hk():
         screen_label="hk-midday-refresh",
         empty_message="[scheduler] No HK candidates for midday screen refresh.",
         success_template="[scheduler] ✅ HK midday screen: {ticker_count} tickers, {buy_count} buy signals",
+        include_momentum_discovery=True,
     )
 
 
@@ -196,7 +200,8 @@ def _run_research_context_job(market: Market) -> None:
         logger.info(
             f"[scheduler] ✅ {market} research context built: "
             f"{len(context.get('watchlist', []))} watchlist tickers, "
-            f"{len(context.get('recent_signals', []))} recent signals"
+            f"{len(context.get('recent_signals', []))} recent signals, "
+            f"{len(context.get('momentum_candidates', []))} momentum candidates"
         )
     except Exception as exc:
         logger.error(f"[scheduler] {market} research context build failed: {exc}", exc_info=True)
@@ -210,31 +215,51 @@ def _run_market_screen(
     screen_label: str,
     empty_message: str,
     success_template: str,
+    include_momentum_discovery: bool = False,
 ) -> None:
     try:
         with Session(engine) as session:
             tickers = tickers_factory(session)
-            if not tickers:
+            if not tickers and not include_momentum_discovery:
                 logger.info(empty_message)
                 return
 
-            results = run_screen(
-                tickers=tickers,
-                session=session,
-                screen_scope="watchlist",
-                screen_label=screen_label,
-                use_watchlist=True,
-                market=market,
-            )
+            discovery_results = []
+            if include_momentum_discovery:
+                discovery_results = run_momentum_discovery_screen(
+                    market=market,
+                    session=session,
+                    exclude_tickers=tickers,
+                    screen_label=f"{screen_label}-momentum",
+                )
+                discovery_buys = [result for result in discovery_results if result["signal"] == "buy"]
+                if discovery_results:
+                    logger.info(
+                        f"[scheduler] ✅ {market} momentum discovery: {len(discovery_results)} candidates, {len(discovery_buys)} buy signals"
+                    )
+
+            results = []
+            if tickers:
+                results = run_screen(
+                    tickers=tickers,
+                    session=session,
+                    screen_scope="watchlist",
+                    screen_label=screen_label,
+                    use_watchlist=True,
+                    market=market,
+                )
             buys = [result for result in results if result["signal"] == "buy"]
             flags = [result for result in results if result["signal"] == "flag"]
-            logger.info(
-                success_template.format(
-                    ticker_count=len(tickers),
-                    buy_count=len(buys),
-                    flag_count=len(flags),
+            if results:
+                logger.info(
+                    success_template.format(
+                        ticker_count=len(tickers),
+                        buy_count=len(buys),
+                        flag_count=len(flags),
+                    )
                 )
-            )
+            elif not discovery_results:
+                logger.info(empty_message)
     except Exception as exc:
         logger.error(f"[scheduler] {market} screen failed: {exc}", exc_info=True)
 
