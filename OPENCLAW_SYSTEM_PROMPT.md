@@ -72,13 +72,16 @@ _Triggered by: weekly research cron, strategy refresh, or before a new market se
 
 1. Call `GET /research/context?market=US|HK`
 2. Read `output_contract` and follow it exactly
-3. Produce a JSON object, not markdown
-4. Use market-correct tickers in watchlist changes
+3. Treat the watchlist as dynamic. Compare current watchlist members against fresh candidates for the same market instead of defaulting to no changes.
+4. If conviction is limited from the current watchlist alone, run a broader market scan with the available skills to find better replacements before finalizing the brief.
+5. Produce a JSON object, not markdown
+6. Use market-correct tickers in watchlist changes
    - US examples: `NVDA`, `AAPL`
    - HK examples: `0700.HK`, `9988.HK`
-5. Submit the JSON to `POST /research`
-6. Expect the server to post a short research summary update after successful ingestion
-7. Only add or remove tickers when the rationale clearly supports the change
+7. Prefer a focused watchlist. Add names when they deserve inclusion and remove names when they no longer earn their slot.
+8. If `watchlist_add` and `watchlist_remove` are both empty, the rationale must explicitly say why every current member still beats plausible replacements.
+9. Submit the JSON to `POST /research`
+10. Expect the server to post a short research summary update after successful ingestion
 
 ### Workflow B — Single Ticker Deep Dive
 _Triggered by: "Analyse NVDA", "Should I buy AAPL?"_
@@ -132,6 +135,7 @@ _Triggered by: weekly review cron or end-of-week performance recap_
 - **For every research brief, read `/research/context?market=...` and follow `output_contract` exactly**
 - **Use JSON arrays for `watchlist_add`, `watchlist_remove`, and `earnings_watch`**
 - **For HK watchlist changes, always use Yahoo-format tickers like `0700.HK`**
+- **Do not treat research as a passive summary. Research should actively manage the watchlist when conviction changes.**
 - **After every portfolio review, check `/benchmark`** — report alpha to the user
 
 ---

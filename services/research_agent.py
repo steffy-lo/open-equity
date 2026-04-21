@@ -55,14 +55,20 @@ def build_research_context(market: Market = "US") -> dict:
         "generated_at": now.isoformat() + "Z",
         "market": market,
         "week_of": _this_monday(),
+        "watchlist_policy": {
+            "mode": "dynamic",
+            "goal": "keep the watchlist concentrated in the highest-conviction liquid names for this market",
+            "mutation_expectation": "Do not default to no-op. Compare current names against fresh opportunities and use watchlist_add/watchlist_remove whenever conviction meaningfully changed.",
+            "no_change_bar": "Leave watchlist_add and watchlist_remove empty only if you explicitly conclude that every current member still deserves its slot versus plausible replacements.",
+        },
         "watchlist": _build_watchlist_snapshot(watchlist),
         "recent_signals": recent_signals,
         "benchmark_trend": benchmark_trend,
         "prior_brief": _serialize_brief(prior_brief, include_created_at=False),
         "output_contract": _research_output_contract(market),
         "next_step": (
-            f"Analyse this {market} market data, produce a JSON brief that matches output_contract exactly, "
-            "then POST that JSON to POST /research."
+            f"Analyse this {market} market data, compare the current watchlist against the best available opportunities for this market, "
+            "produce a JSON brief that matches output_contract exactly, then POST that JSON to POST /research."
         ),
     }
 
@@ -311,6 +317,10 @@ def _research_output_contract(market: Market) -> dict:
             "Only include tickers that belong to the current market in watchlist_add, watchlist_remove, and earnings_watch.",
             f"For {market} watchlist changes, normalize tickers like {example_ticker} before posting.",
             "Keep macro_summary, key_risks, and rationale concise but explicit.",
+            "Treat the watchlist as dynamic, not static. Evaluate whether current names still deserve their slots.",
+            "Do not default to empty watchlist_add and watchlist_remove. Use them whenever there is a credible higher-conviction replacement or a current member lost conviction.",
+            "If you keep the watchlist unchanged, state explicitly in rationale that you considered adds/removes and why no candidate beat the existing names.",
+            "Prefer a focused watchlist. Remove weaker names when stronger replacements exist instead of only accumulating more tickers.",
         ],
         "schema": {
             "market": market,
@@ -330,7 +340,7 @@ def _research_output_contract(market: Market) -> dict:
         },
         "examples": {
             "watchlist_add": [example_ticker],
-            "watchlist_remove": [],
+            "watchlist_remove": [example_ticker],
         },
     }
 

@@ -250,13 +250,14 @@ The server-side scheduler only prepares context. The actual research brief must 
 
 Recommended flow per market:
 1. `GET /research/context?market=US|HK`
-2. Generate a JSON brief that matches `output_contract`
+2. Compare the current watchlist against fresh candidates for that market, then generate a JSON brief that matches `output_contract`
 3. Submit it with `python3 scripts/submit_research_brief.py --market US|HK`
 4. On ingest, the server stores the brief, applies watchlist changes, and optionally sends a concise research update to the configured pipeline topic
 
 The context payload includes:
 - `output_contract.schema` for the exact JSON shape
 - `output_contract.rules` for formatting and market-specific ticker handling
+- `watchlist_policy` to signal that research should actively maintain a dynamic watchlist rather than defaulting to no-op briefs
 - normalized HK ticker expectations like `0700.HK`
 
 On ingest, the server also normalizes market tickers before applying watchlist changes, so bare HK codes like `700` become `0700.HK`.
