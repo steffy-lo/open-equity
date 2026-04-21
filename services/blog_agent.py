@@ -353,6 +353,7 @@ def _forward_blog_post(title: str, summary: str, content: str, target: str) -> d
         channel="telegram",
         target=target,
         message=message,
+        wait=False,
     )
     if result.get("ok"):
         logger.info(f"[blog_agent] Forwarded blog post to {target}")

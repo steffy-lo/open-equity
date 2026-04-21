@@ -19,7 +19,7 @@ def main() -> int:
     payload = _load_payload(args.input)
     payload["market"] = args.market
 
-    response = requests.post(f"{args.base_url.rstrip('/')}/research", json=payload, timeout=30)
+    response = requests.post(f"{args.base_url.rstrip('/')}/research", json=payload, timeout=120)
     response.raise_for_status()
     print(json.dumps(response.json(), indent=2, sort_keys=True))
     return 0

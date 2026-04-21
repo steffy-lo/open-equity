@@ -276,6 +276,7 @@ def _send_research_update(message: str) -> dict:
         channel=RESEARCH_UPDATE_CHANNEL,
         target=RESEARCH_UPDATE_TOPIC,
         message=message,
+        wait=False,
     )
     if result.get("ok"):
         return {"ok": True, "target": RESEARCH_UPDATE_TOPIC}

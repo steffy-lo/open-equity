@@ -55,6 +55,7 @@ def _send_trade_update(message: str) -> dict:
         channel=TRADE_UPDATE_CHANNEL,
         target=TRADE_UPDATE_TOPIC,
         message=message,
+        wait=False,
     )
     if result.get("ok"):
         return {"ok": True, "target": TRADE_UPDATE_TOPIC}
