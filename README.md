@@ -138,6 +138,34 @@ curl "http://localhost:5000/history?ticker=NVDA"
 curl http://localhost:5000/benchmark
 ```
 
+### Manual autonomous pipeline triggers
+
+```bash
+# US market (default)
+curl -X POST "http://localhost:5000/pipeline/entry"
+curl -X POST "http://localhost:5000/pipeline/exit"
+
+# Hong Kong market
+curl -X POST "http://localhost:5000/pipeline/entry?market=HK"
+curl -X POST "http://localhost:5000/pipeline/exit?market=HK"
+```
+
+`GET /pipeline/status` now returns separate last-run results for US and HK passes.
+
+### Autonomous trade updates to Telegram
+
+The execution agent can forward every autonomous buy or sell to an OpenClaw-routed Telegram target. HK tickers are tagged as `Market: HK` and use `HK$` in the execution price line.
+
+Configure in `.env`:
+
+```bash
+TRADE_UPDATE_CHANNEL=telegram
+TRADE_UPDATE_ACCOUNT_ID=default
+TRADE_UPDATE_TOPIC=telegram:-1003765209717:428
+```
+
+Each update includes ticker, side, size, execution price, reason or note, and resulting cash or position context.
+
 ---
 
 ## Background Jobs

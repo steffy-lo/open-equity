@@ -24,9 +24,9 @@ Blog endpoints:
 
 import logging
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 
 from services.research_agent import (
     build_research_context,
@@ -45,9 +45,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Trading Pipeline"])
 
+Market = Literal["US", "HK"]
+
 # ── In-memory cache for last pass results (lightweight) ───────
-_last_entry_result: dict = {}
-_last_exit_result:  dict = {}
+_last_entry_result: dict[str, dict] = {}
+_last_exit_result:  dict[str, dict] = {}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -159,29 +161,35 @@ def get_post(post_id: int):
 # ─────────────────────────────────────────────────────────────
 
 @router.post("/pipeline/entry", summary="Manually trigger the entry pass")
-def trigger_entry(background_tasks: BackgroundTasks):
+def trigger_entry(background_tasks: BackgroundTasks, market: Market = Query("US")):
     """
-    Runs the entry pass in the background (normally fires at 9:35am ET on market days).
-    Returns immediately — check GET /pipeline/status for results.
+    Runs the market-specific entry pass in the background.
+    Returns immediately, check GET /pipeline/status for results.
     """
-    background_tasks.add_task(_run_entry_bg)
-    return {"status": "started", "message": "Entry pass running in background. Check GET /pipeline/status."}
+    background_tasks.add_task(_run_entry_bg, market)
+    return {"status": "started", "market": market, "message": f"{market} entry pass running in background. Check GET /pipeline/status."}
 
 
 @router.post("/pipeline/exit", summary="Manually trigger the exit pass")
-def trigger_exit(background_tasks: BackgroundTasks):
+def trigger_exit(background_tasks: BackgroundTasks, market: Market = Query("US")):
     """
-    Runs the exit pass in the background (normally fires at 3:45pm ET on market days).
+    Runs the market-specific exit pass in the background.
     """
-    background_tasks.add_task(_run_exit_bg)
-    return {"status": "started", "message": "Exit pass running in background. Check GET /pipeline/status."}
+    background_tasks.add_task(_run_exit_bg, market)
+    return {"status": "started", "market": market, "message": f"{market} exit pass running in background. Check GET /pipeline/status."}
 
 
 @router.get("/pipeline/status", summary="Last entry and exit pass results")
 def pipeline_status():
     return {
-        "last_entry_pass": _last_entry_result or {"note": "Not run yet"},
-        "last_exit_pass":  _last_exit_result  or {"note": "Not run yet"},
+        "last_entry_pass": {
+            "US": _last_entry_result.get("US", {"note": "Not run yet"}),
+            "HK": _last_entry_result.get("HK", {"note": "Not run yet"}),
+        },
+        "last_exit_pass": {
+            "US": _last_exit_result.get("US", {"note": "Not run yet"}),
+            "HK": _last_exit_result.get("HK", {"note": "Not run yet"}),
+        },
     }
 
 
@@ -189,21 +197,21 @@ def pipeline_status():
 # Background task helpers
 # ─────────────────────────────────────────────────────────────
 
-def _run_entry_bg():
+def _run_entry_bg(market: Market = "US"):
     global _last_entry_result
     try:
-        _last_entry_result = run_entry_pass()
-        logger.info(f"[pipeline_router] Entry pass done: {_last_entry_result}")
+        _last_entry_result[market] = run_entry_pass(market=market)
+        logger.info(f"[pipeline_router] {market} entry pass done: {_last_entry_result[market]}")
     except Exception as exc:
-        logger.error(f"[pipeline_router] Entry pass failed: {exc}", exc_info=True)
-        _last_entry_result = {"error": str(exc)}
+        logger.error(f"[pipeline_router] {market} entry pass failed: {exc}", exc_info=True)
+        _last_entry_result[market] = {"market": market, "error": str(exc)}
 
 
-def _run_exit_bg():
+def _run_exit_bg(market: Market = "US"):
     global _last_exit_result
     try:
-        _last_exit_result = run_exit_pass()
-        logger.info(f"[pipeline_router] Exit pass done: {_last_exit_result}")
+        _last_exit_result[market] = run_exit_pass(market=market)
+        logger.info(f"[pipeline_router] {market} exit pass done: {_last_exit_result[market]}")
     except Exception as exc:
-        logger.error(f"[pipeline_router] Exit pass failed: {exc}", exc_info=True)
-        _last_exit_result = {"error": str(exc)}
+        logger.error(f"[pipeline_router] {market} exit pass failed: {exc}", exc_info=True)
+        _last_exit_result[market] = {"market": market, "error": str(exc)}
