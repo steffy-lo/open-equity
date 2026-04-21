@@ -25,8 +25,8 @@ Blog endpoints:
 import logging
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
-from pydantic import BaseModel
-from typing import Literal, Optional
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from services.research_agent import (
     build_research_context,
@@ -40,12 +40,11 @@ from services.blog_agent import (
     get_blog_post,
 )
 from services.execution_agent import run_entry_pass, run_exit_pass
+from services.markets import Market
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Trading Pipeline"])
-
-Market = Literal["US", "HK"]
 
 # ── In-memory cache for last pass results (lightweight) ───────
 _last_entry_result: dict[str, dict] = {}
@@ -77,12 +76,12 @@ class ResearchBriefPayload(BaseModel):
     strategy:         Optional[str]       = "mixed"   # momentum|mean_reversion|sector_rotation|defensive|mixed
     time_horizon:     Optional[str]       = None      # e.g. "3-5 day swing"
     risk_posture:     Optional[str]       = "moderate"  # aggressive|moderate|conservative
-    themes:           Optional[list[str]] = []
-    focus_sectors:    Optional[list[str]] = []
-    avoid_sectors:    Optional[list[str]] = []
-    watchlist_add:    Optional[list[str]] = []
-    watchlist_remove: Optional[list[str]] = []
-    earnings_watch:   Optional[list[str]] = []
+    themes:           list[str] = Field(default_factory=list)
+    focus_sectors:    list[str] = Field(default_factory=list)
+    avoid_sectors:    list[str] = Field(default_factory=list)
+    watchlist_add:    list[str] = Field(default_factory=list)
+    watchlist_remove: list[str] = Field(default_factory=list)
+    earnings_watch:   list[str] = Field(default_factory=list)
     key_risks:        Optional[str]       = None
     rationale:        Optional[str]       = None
 

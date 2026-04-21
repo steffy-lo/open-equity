@@ -21,7 +21,7 @@ Risk parameters (all configurable via .env):
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Optional
+from typing import Optional
 
 import requests
 from sqlmodel import select, col
@@ -40,25 +40,11 @@ from config import (
 )
 from database import Signal, Trade, Position, session_scope
 from services.market_data import get_price_data
+from services.markets import Market, infer_market, market_currency_prefix
 from services.portfolio_engine import execute_order, get_portfolio_state
 from services.research_agent import get_latest_brief
 
 logger = logging.getLogger(__name__)
-
-Market = Literal["US", "HK"]
-
-
-def infer_market(ticker: str) -> Market:
-    t = (ticker or "").upper().strip()
-    return "HK" if t.endswith(".HK") else "US"
-
-
-def _market_currency_prefix(market: Market, currency: str | None = None) -> str:
-    ccy = (currency or "").upper()
-    if market == "HK" or ccy == "HKD":
-        return "HK$"
-    return "$"
-
 
 def _send_trade_update(message: str) -> dict:
     payload = {
@@ -84,7 +70,7 @@ def _format_trade_update(*, side: str, ticker: str, qty: int | float, fill_price
     side_label = "BUY" if side == "buy" else "SELL"
     icon = "🟢" if side == "buy" else "🔴"
 
-    money_prefix = _market_currency_prefix(market, currency)
+    money_prefix = market_currency_prefix(market, currency)
 
     lines = [
         f"{icon} Trade update",
