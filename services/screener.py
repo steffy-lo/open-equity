@@ -13,7 +13,8 @@ Two modes:
      (TradingView Screener, Equity Valuation Framework, etc.).
      Server stores them, marks acted_on when an order follows.
 
-Watchlist is stored as watchlist.json (editable via PUT /watchlist or directly).
+Watchlists are stored per market and can still fall back to the legacy shared
+watchlist.json file for backward compatibility.
 """
 import json
 import logging
@@ -23,7 +24,8 @@ from typing import Literal, Optional
 from sqlmodel import Session, select, col
 from database import Signal, engine
 from services.market_data import get_price_data, get_technicals
-from config import WATCHLIST_PATH, MIN_SIGNAL_CONFIDENCE
+from config import HK_WATCHLIST_PATH, MIN_SIGNAL_CONFIDENCE, US_WATCHLIST_PATH, WATCHLIST_PATH
+from services.markets import Market, infer_market, normalize_market_tickers
 
 logger = logging.getLogger(__name__)
 
@@ -73,37 +75,90 @@ def _resolve_screen_scope(
 # Watchlist helpers
 # ─────────────────────────────────────────────────────────────
 
-def load_watchlist() -> list:
-    if not os.path.exists(WATCHLIST_PATH):
+def _watchlist_path(market: Market) -> str:
+    return HK_WATCHLIST_PATH if market == "HK" else US_WATCHLIST_PATH
+
+
+def _read_watchlist_file(path: str, market: Market | None = None) -> list[str]:
+    if not os.path.exists(path):
         return []
-    with open(WATCHLIST_PATH) as f:
+    with open(path) as f:
         data = json.load(f)
-    return [t.upper() for t in data.get("tickers", [])]
+    tickers = [str(t).upper() for t in data.get("tickers", [])]
+    if market is None:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for ticker in tickers:
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                merged.append(ticker)
+        return merged
+    return normalize_market_tickers(tickers, market)
 
 
-def save_watchlist(tickers: list):
-    with open(WATCHLIST_PATH, "w") as f:
+def load_watchlist(market: Market | None = None) -> list:
+    if market is None:
+        merged = (
+            _read_watchlist_file(US_WATCHLIST_PATH)
+            + _read_watchlist_file(HK_WATCHLIST_PATH)
+            + _read_watchlist_file(WATCHLIST_PATH)
+        )
+        seen: set[str] = set()
+        result: list[str] = []
+        for ticker in merged:
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                result.append(ticker)
+        return result
+
+    specific = _read_watchlist_file(_watchlist_path(market), market)
+    if specific:
+        return specific
+    return _read_watchlist_file(WATCHLIST_PATH, market)
+
+
+def save_watchlist(tickers: list, market: Market):
+    path = _watchlist_path(market)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    normalized = normalize_market_tickers([str(t) for t in tickers], market)
+    with open(path, "w") as f:
         json.dump(
-            {"tickers": tickers, "updated_at": datetime.utcnow().isoformat()},
+            {"tickers": normalized, "market": market, "updated_at": datetime.utcnow().isoformat()},
             f, indent=2
         )
 
 
-def add_to_watchlist(tickers: list) -> list:
-    current = set(load_watchlist())
-    current.update(t.upper() for t in tickers)
-    updated = sorted(current)
-    save_watchlist(updated)
-    return updated
+def add_to_watchlist(tickers: list, market: Market | None = None) -> list:
+    if market is not None:
+        current = set(load_watchlist(market))
+        current.update(normalize_market_tickers([str(t) for t in tickers], market))
+        updated = sorted(current)
+        save_watchlist(updated, market)
+        return updated
+
+    updated: list[str] = []
+    for target_market in ("US", "HK"):
+        market_tickers = [str(t) for t in tickers if infer_market(str(t)) == target_market]
+        if not market_tickers:
+            continue
+        updated.extend(add_to_watchlist(market_tickers, market=target_market))
+    return load_watchlist()
 
 
-def remove_from_watchlist(tickers: list) -> list:
-    current = set(load_watchlist())
-    for t in tickers:
-        current.discard(t.upper())
-    updated = sorted(current)
-    save_watchlist(updated)
-    return updated
+def remove_from_watchlist(tickers: list, market: Market | None = None) -> list:
+    if market is not None:
+        current = set(load_watchlist(market))
+        for ticker in normalize_market_tickers([str(t) for t in tickers], market):
+            current.discard(ticker)
+        updated = sorted(current)
+        save_watchlist(updated, market)
+        return updated
+
+    for target_market in ("US", "HK"):
+        market_tickers = [str(t) for t in tickers if infer_market(str(t)) == target_market]
+        if market_tickers:
+            remove_from_watchlist(market_tickers, market=target_market)
+    return load_watchlist()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -251,6 +306,7 @@ def run_screen(
     screen_label: str | None = None,
     universe: str | None = None,
     use_watchlist: bool = False,
+    market: Market | None = None,
 ) -> list:
     """
     Score every ticker in `tickers` (or full watchlist if None).
@@ -259,7 +315,7 @@ def run_screen(
     """
     normalized_tickers = _normalize_tickers(tickers)
     if not normalized_tickers:
-        normalized_tickers = load_watchlist()
+        normalized_tickers = load_watchlist(market=market)
         use_watchlist = True
 
     if not normalized_tickers:

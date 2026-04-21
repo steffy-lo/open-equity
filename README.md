@@ -131,10 +131,12 @@ Those signals are stored with screen metadata so OpenClaw can later filter for:
 
 ### Add tickers to watchlist
 ```bash
-curl -X PUT http://localhost:5000/watchlist \
+curl -X PUT "http://localhost:5000/watchlist?market=US" \
   -H "Content-Type: application/json" \
   -d '{"tickers":["TSM","ASML","005930.KS"],"action":"add"}'
 ```
+
+Use `market=HK` for Hong Kong watchlist updates. `GET /watchlist?market=US|HK` returns a market-specific list, while `GET /watchlist` returns the merged view for convenience.
 
 ### View latest signals
 ```bash
@@ -319,7 +321,8 @@ open-equity/
 ├── database.py                  # SQLModel tables + session factory
 ├── requirements.txt
 ├── .env.example
-├── watchlist.json               # Editable ticker list
+├── watchlist.us.json            # Editable US ticker list
+├── watchlist.hk.json            # Editable HK ticker list
 ├── OPENCLAW_SYSTEM_PROMPT.md    # Paste this into OpenClaw
 ├── routers/
 │   ├── orders.py                # POST /order
