@@ -33,6 +33,7 @@ from services.markets import (
     normalize_market_tickers,
     normalize_ticker,
 )
+from services.momentum_discovery import discover_momentum_candidates
 from services.openclaw_notify import send_openclaw_message
 from services.screener import add_to_watchlist, load_watchlist, remove_from_watchlist
 
@@ -50,6 +51,7 @@ def build_research_context(market: Market = "US") -> dict:
         recent_signals = _load_recent_signals(session, market, cutoff_signals)
         benchmark_trend = _load_benchmark_trend(session, cutoff_benchmark)
         prior_brief = _load_latest_brief_row(session, market)
+    momentum_candidates = discover_momentum_candidates(market, exclude_tickers=watchlist)
 
     return {
         "generated_at": now.isoformat() + "Z",
@@ -62,6 +64,7 @@ def build_research_context(market: Market = "US") -> dict:
             "no_change_bar": "Leave watchlist_add and watchlist_remove empty only if you explicitly conclude that every current member still deserves its slot versus plausible replacements.",
         },
         "watchlist": _build_watchlist_snapshot(watchlist),
+        "momentum_candidates": momentum_candidates,
         "recent_signals": recent_signals,
         "benchmark_trend": benchmark_trend,
         "prior_brief": _serialize_brief(prior_brief, include_created_at=False),

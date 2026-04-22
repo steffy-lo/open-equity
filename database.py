@@ -47,6 +47,9 @@ class Signal(SQLModel, table=True):
     screen_label: Optional[str] = None
     universe: Optional[str] = None
     watchlist_member: bool = False
+    buy_profile: Optional[str] = None
+    basic_confidence: Optional[float] = None
+    momentum_confidence: Optional[float] = None
     acted_on: bool = False
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
 
@@ -127,6 +130,9 @@ def _ensure_signal_columns() -> None:
         "screen_label": "ALTER TABLE signal ADD COLUMN screen_label VARCHAR",
         "universe": "ALTER TABLE signal ADD COLUMN universe VARCHAR",
         "watchlist_member": "ALTER TABLE signal ADD COLUMN watchlist_member BOOLEAN DEFAULT 0",
+        "buy_profile": "ALTER TABLE signal ADD COLUMN buy_profile VARCHAR",
+        "basic_confidence": "ALTER TABLE signal ADD COLUMN basic_confidence FLOAT",
+        "momentum_confidence": "ALTER TABLE signal ADD COLUMN momentum_confidence FLOAT",
     }
 
     with engine.begin() as conn:

@@ -24,7 +24,15 @@ from typing import Literal, Optional
 from sqlmodel import Session, select, col
 from database import Signal, engine
 from services.market_data import get_price_data, get_technicals
-from config import HK_WATCHLIST_PATH, MIN_SIGNAL_CONFIDENCE, US_WATCHLIST_PATH, WATCHLIST_PATH
+from config import (
+    BASIC_MIN_SIGNAL_CONFIDENCE,
+    HK_WATCHLIST_PATH,
+    MOMENTUM_FLAG_RSI_MAX,
+    MOMENTUM_MIN_SIGNAL_CONFIDENCE,
+    US_WATCHLIST_PATH,
+    WATCHLIST_PATH,
+)
+from services.momentum_discovery import discover_momentum_candidates
 from services.markets import Market, infer_market, normalize_market_tickers
 
 logger = logging.getLogger(__name__)
@@ -165,22 +173,7 @@ def remove_from_watchlist(tickers: list, market: Market | None = None) -> list:
 # Confidence scoring — local technical + fundamental model
 # ─────────────────────────────────────────────────────────────
 
-def _score(price_data: dict, tech: dict) -> tuple:
-    """
-    Returns (signal: str, confidence: float, reason: str)
-
-    FLAG gates are evaluated first — one strong flag immediately classifies
-    the ticker without a buy score.  Two or more flags → higher confidence flag.
-
-    BUY scoring is additive across four dimensions:
-      • Breakout proximity   (max 0.25)
-      • Volume surge         (max 0.20)
-      • RSI zone             (max 0.20)
-      • Trend alignment      (max 0.25)
-      • Fundamental bonus    (max 0.10)
-                             ─────────
-                             total  1.00
-    """
+def _score(price_data: dict, tech: dict) -> dict:
     rsi              = tech.get("rsi_14")     or 50.0
     vol_ratio        = tech.get("volume_ratio") or 1.0
     pct_52w          = tech.get("pct_from_52w_high") or -50.0
@@ -196,103 +189,206 @@ def _score(price_data: dict, tech: dict) -> tuple:
     earnings_growth  = price_data.get("earnings_growth") or 0.0
     country          = (price_data.get("country") or "").upper()
 
-    # ── FLAG GATES ────────────────────────────────────────────
-    flags = []
+    hard_flags = []
+    soft_flags = []
 
-    if rsi > 78:
-        flags.append(f"RSI extremely overbought ({rsi:.1f}) — pullback risk")
     if div_yield > 0.08:
-        flags.append(f"Yield {div_yield*100:.1f}% may be a yield trap — check payout ratio")
+        hard_flags.append(f"Yield {div_yield*100:.1f}% may be a yield trap — check payout ratio")
+    if debt_to_equity > 500:
+        hard_flags.append(f"Dangerous leverage: D/E {debt_to_equity:.0f}%")
+    elif debt_to_equity > 350:
+        soft_flags.append(f"High leverage: D/E {debt_to_equity:.0f}%")
+    if above_sma200 is False and pct_52w < -35:
+        hard_flags.append(f"Price {abs(pct_52w):.1f}% below 52w high, below SMA200 — downtrend")
+    if pe and pe > 120:
+        hard_flags.append(f"Extreme valuation: P/E {pe:.1f} — priced for perfection")
+    elif pe and pe > 80:
+        soft_flags.append(f"Rich valuation: P/E {pe:.1f}")
     if fcf is not None and fcf < 0:
-        flags.append("Negative free cash flow — burning through cash")
-    if debt_to_equity > 350:
-        flags.append(f"Dangerous leverage: D/E {debt_to_equity:.0f}%")
-    if above_sma200 is False and pct_52w < -30:
-        flags.append(f"Price {abs(pct_52w):.1f}% below 52w high, below SMA200 — downtrend")
-    if pe and pe > 80:
-        flags.append(f"Extreme valuation: P/E {pe:.1f} — priced for perfection")
+        soft_flags.append("Negative free cash flow — burning through cash")
+    if rsi > MOMENTUM_FLAG_RSI_MAX:
+        soft_flags.append(f"RSI extremely overbought ({rsi:.1f}) — pullback risk")
 
-    if len(flags) >= 2:
-        confidence = min(0.55 + len(flags) * 0.08, 0.95)
-        return ("flag", round(confidence, 2), " | ".join(flags))
-    elif len(flags) == 1:
-        return ("flag", 0.65, flags[0])
+    flag_reasons = hard_flags + soft_flags
+    if hard_flags or len(soft_flags) >= 2:
+        flag_confidence = min(0.6 + 0.07 * len(flag_reasons), 0.95)
+        return {
+            "signal": "flag",
+            "confidence": round(flag_confidence, 2),
+            "reason": " | ".join(flag_reasons),
+            "buy_profile": None,
+            "basic_confidence": None,
+            "momentum_confidence": None,
+        }
 
-    # ── BUY SCORING ───────────────────────────────────────────
-    confidence = 0.0
-    reasons    = []
+    basic_confidence = 0.0
+    basic_reasons = []
 
-    # 1) Breakout proximity (0–0.25)
     if pct_52w >= -1.5:
-        confidence += 0.25
-        reasons.append(f"At/near 52w high (only {abs(pct_52w):.1f}% away)")
+        basic_confidence += 0.25
+        basic_reasons.append(f"At/near 52w high (only {abs(pct_52w):.1f}% away)")
     elif pct_52w >= -5:
-        confidence += 0.18
-        reasons.append(f"Approaching 52w high ({pct_52w:.1f}%)")
+        basic_confidence += 0.18
+        basic_reasons.append(f"Approaching 52w high ({pct_52w:.1f}%)")
     elif pct_52w >= -10:
-        confidence += 0.10
-        reasons.append(f"Within 10% of 52w high")
+        basic_confidence += 0.10
+        basic_reasons.append("Within 10% of 52w high")
 
-    # 2) Volume surge (0–0.20)
     if vol_ratio >= 2.5:
-        confidence += 0.20
-        reasons.append(f"Exceptional volume surge ({vol_ratio:.1f}× avg)")
+        basic_confidence += 0.20
+        basic_reasons.append(f"Exceptional volume surge ({vol_ratio:.1f}× avg)")
     elif vol_ratio >= 1.8:
-        confidence += 0.15
-        reasons.append(f"Strong volume surge ({vol_ratio:.1f}× avg)")
+        basic_confidence += 0.15
+        basic_reasons.append(f"Strong volume surge ({vol_ratio:.1f}× avg)")
     elif vol_ratio >= 1.4:
-        confidence += 0.10
-        reasons.append(f"Above-avg volume ({vol_ratio:.1f}× avg)")
+        basic_confidence += 0.10
+        basic_reasons.append(f"Above-avg volume ({vol_ratio:.1f}× avg)")
 
-    # 3) RSI zone (0–0.20)
     if 58 <= rsi <= 70:
-        confidence += 0.20
-        reasons.append(f"RSI in momentum sweet spot ({rsi:.1f})")
+        basic_confidence += 0.20
+        basic_reasons.append(f"RSI in momentum sweet spot ({rsi:.1f})")
     elif 50 <= rsi < 58:
-        confidence += 0.12
-        reasons.append(f"RSI building momentum ({rsi:.1f})")
+        basic_confidence += 0.12
+        basic_reasons.append(f"RSI building momentum ({rsi:.1f})")
     elif rsi < 35:
-        confidence += 0.15
-        reasons.append(f"RSI oversold — mean-reversion potential ({rsi:.1f})")
+        basic_confidence += 0.15
+        basic_reasons.append(f"RSI oversold — mean-reversion potential ({rsi:.1f})")
     elif 35 <= rsi < 45:
-        confidence += 0.08
-        reasons.append(f"RSI near oversold ({rsi:.1f})")
+        basic_confidence += 0.08
+        basic_reasons.append(f"RSI near oversold ({rsi:.1f})")
 
-    # 4) Trend alignment (0–0.25)
     if above_sma20 and above_sma50 and above_sma200:
-        confidence += 0.25
-        reasons.append("Above SMA20/50/200 — full trend alignment")
+        basic_confidence += 0.25
+        basic_reasons.append("Above SMA20/50/200 — full trend alignment")
     elif above_sma20 and above_sma50:
-        confidence += 0.16
-        reasons.append("Above SMA20 and SMA50")
+        basic_confidence += 0.16
+        basic_reasons.append("Above SMA20 and SMA50")
     elif above_sma20:
-        confidence += 0.08
-        reasons.append("Above SMA20 only")
+        basic_confidence += 0.08
+        basic_reasons.append("Above SMA20 only")
 
     if macd_bullish:
-        confidence += 0.05
-        reasons.append("MACD bullish crossover")
+        basic_confidence += 0.05
+        basic_reasons.append("MACD bullish crossover")
 
-    # 5) Fundamental bonus (0–0.10)
     if pe and 8 < pe < 22:
-        confidence += 0.04
-        reasons.append(f"Reasonable P/E ({pe:.1f})")
+        basic_confidence += 0.04
+        basic_reasons.append(f"Reasonable P/E ({pe:.1f})")
     if rev_growth > 0.12:
-        confidence += 0.03
-        reasons.append(f"Revenue growing {rev_growth*100:.1f}%")
+        basic_confidence += 0.03
+        basic_reasons.append(f"Revenue growing {rev_growth*100:.1f}%")
     if earnings_growth > 0.10:
-        confidence += 0.03
-        reasons.append(f"EPS growing {earnings_growth*100:.1f}%")
+        basic_confidence += 0.03
+        basic_reasons.append(f"EPS growing {earnings_growth*100:.1f}%")
 
-    # China overlay hint (full analysis via ClaWHub skill)
+    momentum_confidence = 0.0
+    momentum_reasons = []
+
+    if pct_52w >= 0:
+        momentum_confidence += 0.28
+        momentum_reasons.append("Breaking into or sitting at fresh highs")
+    elif pct_52w >= -3:
+        momentum_confidence += 0.24
+        momentum_reasons.append(f"Within 3% of 52w high ({pct_52w:.1f}%)")
+    elif pct_52w >= -8:
+        momentum_confidence += 0.16
+        momentum_reasons.append("Still close enough to leadership zone")
+
+    if vol_ratio >= 2.0:
+        momentum_confidence += 0.22
+        momentum_reasons.append(f"Momentum volume confirmation ({vol_ratio:.1f}× avg)")
+    elif vol_ratio >= 1.5:
+        momentum_confidence += 0.16
+        momentum_reasons.append(f"Above-average breakout volume ({vol_ratio:.1f}× avg)")
+    elif vol_ratio >= 1.1:
+        momentum_confidence += 0.08
+        momentum_reasons.append("Volume healthy enough for a momentum continuation")
+
+    if 60 <= rsi <= 78:
+        momentum_confidence += 0.18
+        momentum_reasons.append(f"RSI supportive for momentum continuation ({rsi:.1f})")
+    elif 55 <= rsi < 60:
+        momentum_confidence += 0.10
+        momentum_reasons.append(f"RSI building toward breakout territory ({rsi:.1f})")
+    elif 78 < rsi <= MOMENTUM_FLAG_RSI_MAX:
+        momentum_confidence += 0.08
+        momentum_reasons.append(f"RSI hot but still acceptable for breakout momentum ({rsi:.1f})")
+
+    if above_sma50 and above_sma200:
+        momentum_confidence += 0.22
+        momentum_reasons.append("Above SMA50 and SMA200 — momentum trend intact")
+    elif above_sma20 and above_sma50:
+        momentum_confidence += 0.14
+        momentum_reasons.append("Above SMA20 and SMA50 — short-term trend intact")
+    elif above_sma20:
+        momentum_confidence += 0.06
+        momentum_reasons.append("Above SMA20")
+
+    if macd_bullish:
+        momentum_confidence += 0.05
+        momentum_reasons.append("MACD bullish")
+    if rev_growth > 0.10:
+        momentum_confidence += 0.03
+        momentum_reasons.append(f"Revenue growth confirms tape strength ({rev_growth*100:.1f}%)")
+    if earnings_growth > 0.10:
+        momentum_confidence += 0.02
+        momentum_reasons.append(f"EPS growth confirms tape strength ({earnings_growth*100:.1f}%)")
+
     if country in ("CN", "HK", "CHINA", "HONG KONG"):
-        reasons.append("⚠ CN/HK ticker — route to China Stock Analysis skill for regulatory overlay")
+        basic_reasons.append("⚠ CN/HK ticker — route to China Stock Analysis skill for regulatory overlay")
+        momentum_reasons.append("⚠ CN/HK ticker — route to China Stock Analysis skill for regulatory overlay")
 
-    confidence = min(round(confidence, 2), 1.0)
-    signal     = "buy" if confidence >= MIN_SIGNAL_CONFIDENCE else "neutral"
-    reason     = " | ".join(reasons) if reasons else "No strong signal detected"
+    basic_confidence = min(round(basic_confidence, 2), 1.0)
+    momentum_confidence = min(round(momentum_confidence, 2), 1.0)
+    basic_pass = basic_confidence >= BASIC_MIN_SIGNAL_CONFIDENCE
+    momentum_pass = momentum_confidence >= MOMENTUM_MIN_SIGNAL_CONFIDENCE
 
-    return (signal, confidence, reason)
+    if basic_pass and momentum_pass:
+        buy_profile = "both"
+    elif basic_pass:
+        buy_profile = "basic"
+    elif momentum_pass:
+        buy_profile = "momentum"
+    else:
+        buy_profile = None
+
+    confidence = max(basic_confidence, momentum_confidence)
+
+    if buy_profile:
+        triggered_reasons = []
+        if buy_profile in ("basic", "both"):
+            triggered_reasons.append(f"Basic profile passed ({basic_confidence:.2f})")
+            triggered_reasons.extend(basic_reasons[:4])
+        if buy_profile in ("momentum", "both"):
+            triggered_reasons.append(f"Momentum profile passed ({momentum_confidence:.2f})")
+            triggered_reasons.extend(momentum_reasons[:4])
+        if soft_flags:
+            triggered_reasons.append("Soft risks: " + " | ".join(soft_flags))
+        return {
+            "signal": "buy",
+            "confidence": confidence,
+            "reason": " | ".join(triggered_reasons),
+            "buy_profile": buy_profile,
+            "basic_confidence": basic_confidence,
+            "momentum_confidence": momentum_confidence,
+        }
+
+    neutral_reasons = []
+    if basic_reasons:
+        neutral_reasons.append(f"Basic profile {basic_confidence:.2f}: " + " | ".join(basic_reasons[:4]))
+    if momentum_reasons:
+        neutral_reasons.append(f"Momentum profile {momentum_confidence:.2f}: " + " | ".join(momentum_reasons[:4]))
+    if soft_flags:
+        neutral_reasons.append("Soft risks: " + " | ".join(soft_flags))
+
+    return {
+        "signal": "neutral",
+        "confidence": confidence,
+        "reason": " | ".join(neutral_reasons) if neutral_reasons else "No strong signal detected",
+        "buy_profile": None,
+        "basic_confidence": basic_confidence,
+        "momentum_confidence": momentum_confidence,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -333,13 +429,16 @@ def run_screen(
         try:
             price_data = get_price_data(t)
             tech       = get_technicals(t)
-            signal, confidence, reason = _score(price_data, tech)
+            score = _score(price_data, tech)
 
             result = {
                 "ticker":            t,
-                "signal":            signal,
-                "confidence":        confidence,
-                "reason":            reason,
+                "signal":            score["signal"],
+                "confidence":        score["confidence"],
+                "reason":            score["reason"],
+                "buy_profile":       score.get("buy_profile"),
+                "basic_confidence":  score.get("basic_confidence"),
+                "momentum_confidence": score.get("momentum_confidence"),
                 "price":             price_data.get("price"),
                 "change_pct":        price_data.get("change_pct"),
                 "rsi_14":            tech.get("rsi_14"),
@@ -362,15 +461,18 @@ def run_screen(
             if session:
                 session.add(Signal(
                     ticker          = t,
-                    signal          = signal,
-                    confidence      = confidence,
-                    reason          = reason,
+                    signal          = score["signal"],
+                    confidence      = score["confidence"],
+                    reason          = score["reason"],
                     skill_used      = "local_screener",
                     price_at_signal = price_data.get("price"),
                     screen_scope    = resolved_scope,
                     screen_label    = screen_label,
                     universe        = universe,
                     watchlist_member= watchlist_membership.get(t, False),
+                    buy_profile     = score.get("buy_profile"),
+                    basic_confidence= score.get("basic_confidence"),
+                    momentum_confidence= score.get("momentum_confidence"),
                 ))
 
         except Exception as exc:
@@ -389,6 +491,30 @@ def run_screen(
 
     results.sort(key=lambda x: (_SIGNAL_ORDER.get(x["signal"], 3), -x.get("confidence", 0)))
     return results
+
+
+def run_momentum_discovery_screen(
+    *,
+    market: Market,
+    session: Session | None = None,
+    exclude_tickers: list[str] | None = None,
+    screen_label: str | None = None,
+) -> list:
+    excluded = normalize_market_tickers((exclude_tickers or []) + load_watchlist(market=market), market)
+    candidates = discover_momentum_candidates(market, exclude_tickers=excluded)
+    tickers = [candidate["ticker"] for candidate in candidates if candidate.get("ticker")]
+    if not tickers:
+        return []
+
+    return run_screen(
+        tickers=tickers,
+        session=session,
+        screen_scope="custom_universe",
+        screen_label=screen_label or f"{market.lower()}-momentum-discovery",
+        universe=f"{market} momentum candidates outside watchlist",
+        use_watchlist=False,
+        market=market,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -426,6 +552,9 @@ def ingest_signals(signals: list, session: Session) -> dict:
                 screen_label    = s.get("screen_label"),
                 universe        = s.get("universe"),
                 watchlist_member= s.get("watchlist_member", watchlist_membership.get(ticker, False)),
+                buy_profile     = s.get("buy_profile"),
+                basic_confidence= s.get("basic_confidence"),
+                momentum_confidence= s.get("momentum_confidence"),
             )
             session.add(sig)
             stored += 1
@@ -483,6 +612,9 @@ def get_latest_signals(
                 "screen_label":     sig.screen_label,
                 "universe":         sig.universe,
                 "watchlist_member": sig.watchlist_member,
+                "buy_profile":      sig.buy_profile,
+                "basic_confidence": sig.basic_confidence,
+                "momentum_confidence": sig.momentum_confidence,
                 "acted_on":         sig.acted_on,
                 "timestamp":        sig.timestamp.isoformat() + "Z",
             })

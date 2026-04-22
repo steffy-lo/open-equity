@@ -136,6 +136,9 @@ def signal_history(ticker: str, session: Session = Depends(get_session)):
                 "screen_label": row.screen_label,
                 "universe": row.universe,
                 "watchlist_member": row.watchlist_member,
+                "buy_profile": row.buy_profile,
+                "basic_confidence": row.basic_confidence,
+                "momentum_confidence": row.momentum_confidence,
                 "acted_on": row.acted_on,
                 "timestamp": row.timestamp.isoformat() + "Z",
             }

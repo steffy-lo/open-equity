@@ -16,7 +16,7 @@ Risk parameters (all configurable via .env):
   EXEC_STOP_LOSS_PCT      sell if position falls this much below avg cost (default 8%)
   EXEC_TAKE_PROFIT_PCT    sell if position rises this much above avg cost (default 20%)
   EXEC_MAX_TRADES_PER_DAY max new buy orders per calendar day (default 3)
-  MIN_SIGNAL_CONFIDENCE   minimum confidence to act on a signal (from config, default 0.70)
+  EXEC_MIN_SIGNAL_CONFIDENCE minimum confidence to act on a stored buy signal (default 0.58)
 """
 
 import logging
@@ -28,10 +28,10 @@ from sqlmodel import select, col
 from config import (
     EXEC_MAX_POSITION_PCT,
     EXEC_MAX_EXPOSURE_PCT,
+    EXEC_MIN_SIGNAL_CONFIDENCE,
     EXEC_STOP_LOSS_PCT,
     EXEC_TAKE_PROFIT_PCT,
     EXEC_MAX_TRADES_PER_DAY,
-    MIN_SIGNAL_CONFIDENCE,
     TRADE_UPDATE_ACCOUNT_ID,
     TRADE_UPDATE_CHANNEL,
     TRADE_UPDATE_TOPIC,
@@ -191,7 +191,7 @@ def run_entry_pass(market: Market = "US") -> dict:
             select(Signal)
             .where(Signal.signal == "buy")
             .where(Signal.acted_on == False)        # noqa: E712
-            .where(Signal.confidence >= MIN_SIGNAL_CONFIDENCE)
+            .where(Signal.confidence >= EXEC_MIN_SIGNAL_CONFIDENCE)
             .where(Signal.timestamp >= cutoff)
             .order_by(col(Signal.confidence).desc(), col(Signal.timestamp).desc())
         ).all()
@@ -237,6 +237,7 @@ def run_entry_pass(market: Market = "US") -> dict:
 
             note = (
                 f"Auto-entry {market} | conf={sig.confidence:.2f} | {sig.reason[:120]} | "
+                f"profile={sig.buy_profile or 'external'} | "
                 f"strategy={brief.get('strategy', 'n/a')} | "
                 f"horizon={brief.get('time_horizon', 'n/a')}"
             )
@@ -431,7 +432,7 @@ def _size_position(
     Risk posture multiplier: aggressive 1.0×  moderate 0.7×  conservative 0.45×
     """
     posture_mult = {"aggressive": 1.0, "moderate": 0.7, "conservative": 0.45}.get(risk_posture, 0.7)
-    conf_scale   = (confidence - MIN_SIGNAL_CONFIDENCE) / (1.0 - MIN_SIGNAL_CONFIDENCE)
+    conf_scale   = (confidence - EXEC_MIN_SIGNAL_CONFIDENCE) / (1.0 - EXEC_MIN_SIGNAL_CONFIDENCE)
     conf_scale   = max(0.1, min(conf_scale, 1.0))
 
     target_value = total_value * EXEC_MAX_POSITION_PCT * posture_mult * conf_scale
