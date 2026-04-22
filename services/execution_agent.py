@@ -432,7 +432,7 @@ def _size_position(
     Risk posture multiplier: aggressive 1.0×  moderate 0.7×  conservative 0.45×
     """
     posture_mult = {"aggressive": 1.0, "moderate": 0.7, "conservative": 0.45}.get(risk_posture, 0.7)
-    conf_scale   = (confidence - MIN_SIGNAL_CONFIDENCE) / (1.0 - MIN_SIGNAL_CONFIDENCE)
+    conf_scale   = (confidence - EXEC_MIN_SIGNAL_CONFIDENCE) / (1.0 - EXEC_MIN_SIGNAL_CONFIDENCE)
     conf_scale   = max(0.1, min(conf_scale, 1.0))
 
     target_value = total_value * EXEC_MAX_POSITION_PCT * posture_mult * conf_scale
